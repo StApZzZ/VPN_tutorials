@@ -1,0 +1,15 @@
+server {
+    listen 80 default_server;
+{% if vpn_panel_nginx_ipv6_enabled %}
+    listen [::]:80 default_server;
+{% endif %}
+    server_name {{ vpn_panel_server_name }};
+
+    location / {
+        proxy_pass http://{{ vpn_panel_panel_host }}:{{ vpn_panel_panel_port }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

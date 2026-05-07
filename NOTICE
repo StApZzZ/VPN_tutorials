@@ -1,0 +1,37 @@
+VPN Panel
+Copyright (c) 2026 Alexander Gomanov
+
+This project is licensed under the MIT License. See the LICENSE file for details.
+
+You may use this project for personal, educational, or commercial purposes,
+provided that the original copyright notice and license text are preserved.
+
+-------------------------------------------------------------------------------
+Third-Party Acknowledgements
+-------------------------------------------------------------------------------
+
+AmneziaWG
+  AmneziaWG is developed by the AmneziaVPN project.
+  Repository: https://github.com/amnezia-vpn/amnezia-client
+  License: Apache License 2.0
+
+  This project supports the AmneziaWG configuration format and can generate
+  AmneziaWG-compatible peer configuration files. It does not include, modify,
+  or redistribute AmneziaVPN source code.
+
+WireGuard
+  WireGuard® is a registered trademark of Jason A. Donenfeld.
+  Website: https://www.wireguard.com/
+
+  This project can generate WireGuard-compatible configuration files and
+  interact with WireGuard userspace tools. It does not include, modify, or
+  redistribute WireGuard source code.
+
+Xray-core
+  Xray-core is developed by the XTLS project.
+  Repository: https://github.com/XTLS/Xray-core
+  License: Mozilla Public License 2.0
+
+  This project manages Xray server configuration, generates VLESS client
+  profiles, and may call the Xray binary for validation and reload operations.
+  It does not include, modify, or redistribute Xray-core source code.

@@ -1,0 +1,22 @@
+{
+  "endpoint_host": {{ vpn_panel_awg_settings.endpoint_host | to_json }},
+  "endpoint_port": {{ vpn_panel_awg_settings.endpoint_port | int }},
+  "dns_servers": {{ vpn_panel_awg_settings.dns_servers | to_json }},
+  "persistent_keepalive": {{ vpn_panel_awg_settings.persistent_keepalive | int }},
+  "Jc": {{ vpn_panel_awg_settings.Jc | int }},
+  "Jmin": {{ vpn_panel_awg_settings.Jmin | int }},
+  "Jmax": {{ vpn_panel_awg_settings.Jmax | int }},
+  "S1": {{ vpn_panel_awg_settings.S1 | int }},
+  "S2": {{ vpn_panel_awg_settings.S2 | int }},
+  "S3": {{ vpn_panel_awg_settings.S3 | int }},
+  "S4": {{ vpn_panel_awg_settings.S4 | int }},
+  "H1": {{ vpn_panel_awg_settings.H1 | int }},
+  "H2": {{ vpn_panel_awg_settings.H2 | int }},
+  "H3": {{ vpn_panel_awg_settings.H3 | int }},
+  "H4": {{ vpn_panel_awg_settings.H4 | int }},
+  "I1": {{ vpn_panel_awg_settings.I1 | default('') | to_json }},
+  "I2": {{ vpn_panel_awg_settings.I2 | default('') | to_json }},
+  "I3": {{ vpn_panel_awg_settings.I3 | default('') | to_json }},
+  "I4": {{ vpn_panel_awg_settings.I4 | default('') | to_json }},
+  "I5": {{ vpn_panel_awg_settings.I5 | default('') | to_json }}
+}

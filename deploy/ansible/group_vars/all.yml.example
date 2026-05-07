@@ -1,0 +1,35 @@
+# Optional non-secret overrides for deploy/ansible/site.yml.
+
+vpn_panel_server_name: vpn.example.com
+vpn_panel_public_host: 203.0.113.10
+vpn_panel_fallback_host: 198.51.100.20
+vpn_panel_wg_endpoint_host: vpn.example.com
+vpn_panel_xray_client_server: vpn.example.com
+
+vpn_panel_awg_settings:
+  endpoint_host: vpn.example.com
+  endpoint_port: 34011
+  dns_servers: "1.1.1.1,1.0.0.1"
+  persistent_keepalive: 25
+  Jc: 0
+  Jmin: 0
+  Jmax: 0
+  S1: 0
+  S2: 0
+  S3: 0
+  S4: 0
+  H1: 0
+  H2: 0
+  H3: 0
+  H4: 0
+  I1: ""
+  I2: ""
+  I3: ""
+  I4: ""
+  I5: ""
+
+vpn_panel_bot_enabled: false
+vpn_panel_bot_username: your_vpn_bot
+
+vpn_panel_xray_validate_command: /usr/local/bin/xray run -test -config {config_path}
+vpn_panel_xray_reload_command: /bin/systemctl restart xray

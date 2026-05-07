@@ -1,0 +1,58 @@
+- name: Smoke | Compile Python sources
+  ansible.builtin.command: "{{ vpn_panel_venv_dir }}/bin/python -m py_compile {{ vpn_panel_app_dir }}/{{ item }}"
+  loop: "{{ vpn_panel_app_source_files | select('match', '.*\\.py$') | list }}"
+  changed_when: false
+
+- name: Smoke | Check panel service state
+  ansible.builtin.command: systemctl show vpn-panel.service -p ActiveState -p SubState -p Result -p NRestarts
+  register: vpn_panel_service_state
+  changed_when: false
+  when: vpn_panel_panel_enabled | bool
+
+- name: Smoke | Assert panel service is running
+  ansible.builtin.assert:
+    that:
+      - "'ActiveState=active' in vpn_panel_service_state.stdout"
+      - "'SubState=running' in vpn_panel_service_state.stdout"
+  when: vpn_panel_panel_enabled | bool
+
+- name: Smoke | Check panel health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ vpn_panel_panel_port }}/health"
+    return_content: true
+  register: vpn_panel_health
+  when: vpn_panel_panel_enabled | bool
+
+- name: Smoke | Assert panel health endpoint is healthy
+  ansible.builtin.assert:
+    that:
+      - vpn_panel_health.status == 200
+      - "'\"status\":\"ok\"' in (vpn_panel_health.content | regex_replace('\\s+', ''))"
+  when: vpn_panel_panel_enabled | bool
+
+- name: Smoke | Check Telegram bot service state
+  ansible.builtin.command: systemctl show vpn-panel-telegram-bot.service -p ActiveState -p SubState -p Result -p NRestarts
+  register: vpn_panel_bot_service_state
+  changed_when: false
+  when: vpn_panel_bot_enabled | bool
+
+- name: Smoke | Check panel health from Telegram bot host
+  ansible.builtin.uri:
+    url: "{{ vpn_panel_telegram_panel_base_url }}/health"
+    return_content: true
+  register: vpn_panel_bot_panel_health
+  when: vpn_panel_bot_enabled | bool
+
+- name: Smoke | Assert Telegram bot service is running
+  ansible.builtin.assert:
+    that:
+      - "'ActiveState=active' in vpn_panel_bot_service_state.stdout"
+      - "'SubState=running' in vpn_panel_bot_service_state.stdout"
+  when: vpn_panel_bot_enabled | bool
+
+- name: Smoke | Assert panel is reachable from Telegram bot host
+  ansible.builtin.assert:
+    that:
+      - vpn_panel_bot_panel_health.status == 200
+      - "'\"status\":\"ok\"' in (vpn_panel_bot_panel_health.content | regex_replace('\\s+', ''))"
+  when: vpn_panel_bot_enabled | bool

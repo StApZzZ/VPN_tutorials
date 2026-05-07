@@ -1,0 +1,17 @@
+[Unit]
+Description=VPN Panel Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ vpn_panel_app_dir }}
+EnvironmentFile={{ vpn_panel_app_dir }}/.env
+ExecStart=/usr/bin/env bash -lc '{{ vpn_panel_venv_dir }}/bin/python telegram_bot.py'
+Restart=always
+RestartSec=3
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

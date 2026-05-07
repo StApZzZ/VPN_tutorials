@@ -1,0 +1,117 @@
+- name: App | Validate panel secret
+  ansible.builtin.assert:
+    that:
+      - panel_secret_token | trim | length > 0
+      - panel_secret_token | lower not in ["changeme", "replace_me", "replace-with-long-random-token", "your-panel-secret-token", "example-token"]
+    fail_msg: "panel_secret_token must be set to a non-placeholder value."
+
+- name: App | Validate Telegram secrets when bot is enabled
+  ansible.builtin.assert:
+    that:
+      - telegram_bot_token | trim | length > 0
+      - (vpn_panel_admin_user_ids | length) > 0
+    fail_msg: "telegram_bot_token and vpn_panel_admin_user_ids are required when vpn_panel_bot_enabled=true."
+  when: vpn_panel_bot_enabled | bool
+
+- name: App | Ensure application directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ vpn_panel_app_dir }}"
+    - "{{ vpn_panel_config_dir }}"
+    - "{{ vpn_panel_backup_dir }}"
+    - "{{ vpn_panel_xray_apply_backup_dir }}"
+
+- name: App | Copy source files
+  ansible.builtin.copy:
+    src: "{{ vpn_panel_source_dir }}/{{ item }}"
+    dest: "{{ vpn_panel_app_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ vpn_panel_app_source_files }}"
+
+- name: App | Copy source directories
+  ansible.builtin.copy:
+    src: "{{ vpn_panel_source_dir }}/{{ item }}"
+    dest: "{{ vpn_panel_app_dir }}/"
+    owner: root
+    group: root
+    mode: preserve
+  loop: "{{ vpn_panel_app_source_dirs }}"
+
+- name: App | Install Python dependencies in virtualenv
+  ansible.builtin.pip:
+    requirements: "{{ vpn_panel_app_dir }}/requirements.txt"
+    virtualenv: "{{ vpn_panel_venv_dir }}"
+    virtualenv_command: python3 -m venv
+
+- name: App | Render environment file
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ vpn_panel_app_dir }}/.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: App | Render AWG settings file
+  ansible.builtin.template:
+    src: awg_settings.json.j2
+    dest: "{{ vpn_panel_config_dir }}/awg_settings.json"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: App | Render panel systemd unit
+  ansible.builtin.template:
+    src: vpn-panel.service.j2
+    dest: /etc/systemd/system/vpn-panel.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: App | Render Telegram bot systemd unit
+  ansible.builtin.template:
+    src: vpn-panel-telegram-bot.service.j2
+    dest: /etc/systemd/system/vpn-panel-telegram-bot.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: App | Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: App | Enable and restart panel service
+  ansible.builtin.systemd:
+    name: vpn-panel.service
+    enabled: true
+    state: restarted
+  when: vpn_panel_panel_enabled | bool
+
+- name: App | Disable panel service when not requested
+  ansible.builtin.systemd:
+    name: vpn-panel.service
+    enabled: false
+    state: stopped
+  when: not (vpn_panel_panel_enabled | bool)
+
+- name: App | Enable and restart Telegram bot service
+  ansible.builtin.systemd:
+    name: vpn-panel-telegram-bot.service
+    enabled: true
+    state: restarted
+  when: vpn_panel_bot_enabled | bool
+
+- name: App | Disable Telegram bot service when not requested
+  ansible.builtin.systemd:
+    name: vpn-panel-telegram-bot.service
+    enabled: false
+    state: stopped
+  when: not (vpn_panel_bot_enabled | bool)

@@ -1,0 +1,17 @@
+[Unit]
+Description=VPN Panel (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ vpn_panel_app_dir }}
+EnvironmentFile={{ vpn_panel_app_dir }}/.env
+ExecStart=/usr/bin/env bash -lc '{{ vpn_panel_venv_dir }}/bin/python -m uvicorn main:app --host "${PANEL_HOST:-127.0.0.1}" --port "${PANEL_PORT:-8080}"'
+Restart=always
+RestartSec=3
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

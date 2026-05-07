@@ -1,0 +1,35 @@
+- name: Nginx | Render site config
+  ansible.builtin.template:
+    src: vpn-panel.conf.j2
+    dest: /etc/nginx/sites-available/vpn-panel.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: vpn_panel_nginx_enabled | bool
+
+- name: Nginx | Enable site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/vpn-panel.conf
+    dest: /etc/nginx/sites-enabled/vpn-panel.conf
+    state: link
+  when: vpn_panel_nginx_enabled | bool
+
+- name: Nginx | Disable default site when present
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  when: vpn_panel_nginx_enabled | bool
+
+- name: Nginx | Ensure service is enabled and restarted
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: true
+    state: restarted
+  when: vpn_panel_nginx_enabled | bool
+
+- name: Nginx | Disable service when not requested
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: false
+    state: stopped
+  when: not (vpn_panel_nginx_enabled | bool)
