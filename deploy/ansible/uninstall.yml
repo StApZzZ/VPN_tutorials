@@ -19,6 +19,8 @@
         enabled: false
         state: stopped
       loop:
+        - awg-peer-sync.timer
+        - awg-peer-sync.service
         - corpvpn-backup.service
         - corpvpn-healthcheck.service
         - corpvpn-docker-user.service
@@ -33,7 +35,9 @@
         - wg-quick@wg-site.service
         - corpvpn-nat.service
         - corpvpn-policy.service
-      when: item in corpvpn_installed_units.stdout.split()
+      when: >-
+        item in corpvpn_installed_units.stdout.split()
+        or (item | regex_replace('@[^@]+\\.service$', '@.service')) in corpvpn_installed_units.stdout.split()
     - name: Remove CorpVPN service and nginx configuration
       ansible.builtin.file:
         path: "{{ item }}"
@@ -57,6 +61,9 @@
         - /etc/systemd/system/corpvpn-nat.service
         - /etc/systemd/system/corpvpn-policy.service
         - /etc/systemd/system/xray.service
+        - /etc/systemd/system/awg-peer-sync.timer
+        - /etc/systemd/system/awg-peer-sync.service
+        - /usr/local/sbin/awg-peer-sync
         - /etc/systemd/system/awg-quick@.service
         - /etc/systemd/system/wg-quick@wg0.service.d/10-corpvpn.conf
         - /etc/systemd/system/awg-quick@awg0.service.d/10-corpvpn.conf
@@ -90,6 +97,7 @@
         path: "{{ item }}"
         state: absent
       loop:
+        - /var/lib/corpvpn
         - /opt/vpn-panel
         - /etc/vpn-panel
         - /etc/xray

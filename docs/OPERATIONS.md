@@ -19,7 +19,7 @@ Health and backup timers write status and node-exporter textfile metrics. `/metr
 
 Service units restrict capabilities, filesystem writes, devices, kernel interfaces and namespace creation. The panel still runs with the privilege needed for WG/nft and Xray lifecycle; protect the host as a privileged gateway. Only the documented configuration/state paths are writable by the panel sandbox.
 
-For removal, use `uninstall.yml` with the correct private inventory. It stops only CorpVPN services, removes its nginx configuration and its own firewall tables, and preserves keys/state by default. `corpvpn_uninstall_purge=true` explicitly removes CorpVPN state and keys. Review the inventory before invoking a purge.
+For removal, use `uninstall.yml` with the correct private inventory. It stops only CorpVPN services, removes its nginx configuration and its own firewall tables, and preserves keys/state by default. `corpvpn_uninstall_purge=true` explicitly removes CorpVPN state and keys. Previously created local backups are retained separately; remove them only after confirming the required recovery copies. Review the inventory before invoking a purge.
 
 Xray configuration changes restart the service and briefly disconnect existing VLESS sessions. Directory-sync and bulk offboarding batch their changes into one apply; an unchanged apply skips the restart. Schedule routing/profile changes when that interruption is acceptable. This release does not provide zero-downtime Xray updates or HA.
 

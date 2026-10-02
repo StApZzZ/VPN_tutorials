@@ -76,6 +76,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -r deploy/requirements.txt
+      - name: Test production template-service and timer shutdown
+        run: sudo -E "$(command -v python)" -m unittest discover -s tests -p test_systemd_units.py
+        env:
+          CORPVPN_SYSTEMD_TEST: "1"
       - run: ansible-playbook -i localhost, -c local --become native-check.yml
         working-directory: deploy/ansible
   release:

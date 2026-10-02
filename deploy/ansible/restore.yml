@@ -40,6 +40,8 @@
             name: "{{ item }}"
             state: stopped
           loop:
+            - awg-peer-sync.timer
+            - awg-peer-sync.service
             - corpvpn-backup.timer
             - corpvpn-healthcheck.timer
             - vpn-panel-directory-sync.timer
@@ -50,7 +52,10 @@
             - xray.service
             - awg-quick@awg0.service
             - wg-quick@wg0.service
-          when: item in corpvpn_installed_units.stdout.split()
+            - wg-quick@wg-site.service
+          when: >-
+            item in corpvpn_installed_units.stdout.split()
+            or (item | regex_replace('@[^@]+\\.service$', '@.service')) in corpvpn_installed_units.stdout.split()
         - name: Restore verified content
           ansible.builtin.command:
             argv: [python3, "{{ restore_tmp.path }}/restore.py", --archive, "{{ restore_tmp.path }}/backup.tar.gz", --apply]
