@@ -13,16 +13,26 @@
 # the tag points to (git ls-remote --tags <repo>).
 
 # --- Xray-core (VLESS / REALITY) -----------------------------------------------
-corpvpn_xray_version: "26.3.27"
+corpvpn_xray_version: "26.9.9"
 corpvpn_xray_release_url: https://github.com/XTLS/Xray-core/releases/download
 # Keyed by ansible_architecture.
 corpvpn_xray_assets:
   x86_64:
     file: Xray-linux-64.zip
-    sha256: 23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae
+    sha256: 1eb9175d0f0a8f8149c9230a7fc5ae66ce332ed20a53155ce61fe62e3f58b7df
   aarch64:
     file: Xray-linux-arm64-v8a.zip
-    sha256: 4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c
+    sha256: 3e38d72dfc5eb65c91df0e5583e9b6676c32232041da47de6ae73946b526d66c
+
+# Xray is rebuilt with the checked-in Go locks, rather than executing the
+# upstream binary (which contains outdated crypto/compression dependencies).
+corpvpn_xray_repo: https://github.com/XTLS/Xray-core.git
+corpvpn_xray_commit: 52a412d9e2f5c2a5142b1b4e2ab3771dacb8b120
+corpvpn_xray_build_revision: security1
+corpvpn_xray_go_version: "1.27.1"
+corpvpn_xray_go_sha256:
+  amd64: 63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
+  arm64: 3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec
 
 # --- Go toolchain (builds amneziawg-go; not used at run time) ------------------
 # Must be at least the "go" line of the pinned amneziawg-go go.mod

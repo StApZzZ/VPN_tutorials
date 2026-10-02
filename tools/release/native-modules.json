@@ -1,0 +1,406 @@
+{
+  "schema_version": 1,
+  "scope": "Modules embedded in the pinned Linux native builds; host distribution packages are excluded.",
+  "modules": [
+    {
+      "name": "github.com/andybalholm/brotli",
+      "version": "v1.0.6",
+      "go_sum": "h1:Yf9fFpf49Zrxb9NlQaluyE92/+X7UVHlhMNJN2sxfOI=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/apernet/quic-go",
+      "version": "v0.61.1-0.20260806010916-184d081eef3e",
+      "go_sum": "h1:5mgtR5gwIgBKMiGI1QdXldZZ+SNor06Nbu1wCBulQBg=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/cloudflare/circl",
+      "version": "v1.6.5",
+      "go_sum": "h1:O64F26HEqNhznd/hrC5KZXVKYuKM2rx4deZDTc4ihQA=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/ghodss/yaml",
+      "version": "v1.0.1-0.20220118164431-d8423dcdf344",
+      "go_sum": "h1:Arcl6UOIS/kgO2nW3A65HN+7CMjSDP/gofXL4CZt1V4=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/google/btree",
+      "version": "v1.1.2",
+      "go_sum": "h1:xf4v41cLI2Z6FxbKm+8Bu+m8ifhj15JuZ9sa0jZCMUU=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/google/gopacket",
+      "version": "v1.1.19",
+      "go_sum": "h1:ves8RnFZPGiFnTS0uPQStjwru6uO6h+nlr9j6fL7kF8=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/google/uuid",
+      "version": "v1.6.0",
+      "go_sum": "h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/gorilla/websocket",
+      "version": "v1.5.3",
+      "go_sum": "h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/huin/goupnp",
+      "version": "v1.2.0",
+      "go_sum": "h1:uOKW26NG1hsSSbXIZ1IR7XP9Gjd1U8pnLaCMgntmkmY=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/jackpal/go-nat-pmp",
+      "version": "v1.0.2",
+      "go_sum": "h1:KzKSgb7qkJvOUTqYl9/Hg/me3pWgBmERKrTGD7BdWus=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/juju/ratelimit",
+      "version": "v1.0.2",
+      "go_sum": "h1:sRxmtRiajbvrcLQT7S+JbqU0ntsb9W2yhSdNN8tWfaI=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/klauspost/compress",
+      "version": "v1.18.7",
+      "go_sum": "h1:aUyZsS4kH3QTKurYhAOwAHxllVPnOthb3vPfnF1Ehjw=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/klauspost/cpuid/v2",
+      "version": "v2.4.0",
+      "go_sum": "h1:S6Hrbc7+ywsr0r+RLapfGBHfyefhCTwEh3A0tV913Dw=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/koron/go-ssdp",
+      "version": "v0.0.4",
+      "go_sum": "h1:1IDwrghSKYM7yLf7XCzbByg2sJ/JcNOZRXS2jczTwz0=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/libp2p/go-nat",
+      "version": "v1.0.1-0.20250821073202-01afc089f138",
+      "go_sum": "h1:YohuNPT/1k3VcThCQlBZ43PCPWPfMRS1zcxWBF2SLK8=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/libp2p/go-netroute",
+      "version": "v0.2.1",
+      "go_sum": "h1:V8kVrpD8GK0Riv15/7VN6RbUQ3URNZVosw7H2v9tksU=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/miekg/dns",
+      "version": "v1.1.73",
+      "go_sum": "h1:uhT8nJxmTrPJYClxVxTCX+CVn6qnzSiybRk72Z6DgrE=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/pelletier/go-toml",
+      "version": "v1.9.5",
+      "go_sum": "h1:4yBQzkHv+7BHq2PQUZF3Mx0IYxG7LsP222s7Agd3ve8=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/pion/dtls/v3",
+      "version": "v3.1.5",
+      "go_sum": "h1:9xJtVsHwMYeSjPp5Hh1FTis4DchnQWtnOa5o+6ygqfc=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/pion/logging",
+      "version": "v0.2.4",
+      "go_sum": "h1:tTew+7cmQ+Mc1pTBLKH2puKsOvhm32dROumOZ655zB8=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/pion/stun/v3",
+      "version": "v3.1.7",
+      "go_sum": "h1:uRXMTlGLf89WgItGNyZ6aR5jMTX0NBbybXADpQCzn+E=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/pion/transport/v4",
+      "version": "v4.1.0",
+      "go_sum": "h1:8S+nF2reM2cJuqC6g78OVy2BBgmbdns+acx3jA97BvQ=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/pires/go-proxyproto",
+      "version": "v0.15.0",
+      "go_sum": "h1:dTshmNbFm/D+0+sbrxUuddPOZ5Y0B7c5NhtsBkm6LqI=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/quic-go/qpack",
+      "version": "v0.6.0",
+      "go_sum": "h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/refraction-networking/utls",
+      "version": "v1.8.3-0.20260301010127-aa6edf4b11af",
+      "go_sum": "h1:er2acxbi3N1nvEq6HXHUAR1nTWEJmQfqiGR8EVT9rfs=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/robfig/cron/v3",
+      "version": "v3.0.1",
+      "go_sum": "h1:WdRxkvbJztn8LMz/QEvLN5sBU+xKpSqwwUO1Pjr4qDs=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/sagernet/sing",
+      "version": "v0.5.1",
+      "go_sum": "h1:mhL/MZVq0TjuvHcpYcFtmSD1BFOxZ/+8ofbNZcg1k1Y=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/sagernet/sing-shadowsocks",
+      "version": "v0.2.7",
+      "go_sum": "h1:zaopR1tbHEw5Nk6FAkM05wCslV6ahVegEZaKMv9ipx8=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/vishvananda/netlink",
+      "version": "v1.3.1",
+      "go_sum": "h1:3AEMt62VKqz90r0tmNhog0r/PpWKmrEShJU0wJW6bV0=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/vishvananda/netns",
+      "version": "v0.0.5",
+      "go_sum": "h1:DfiHV+j8bA32MFM7bfEunvT8IAqQ/NzSJHtcmW5zdEY=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/wlynxg/anet",
+      "version": "v0.0.5",
+      "go_sum": "h1:J3VJGi1gvo0JwZ/P1/Yc/8p63SoW98B5dHkYDmpgvvU=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "github.com/xtls/reality",
+      "version": "v0.0.0-20260908062103-8cdf7bf9c7f0",
+      "go_sum": "h1:rb+fKQFhz+5I2PPuQsNYxI5mUU840XWYtRF0ZBjvkws=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "go4.org/netipx",
+      "version": "v0.0.0-20231129151722-fdeea329fbba",
+      "go_sum": "h1:0b9z3AuHCjxk0x/opv64kcgZLBseWJUpBw5I82+2U4M=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "golang.org/x/crypto",
+      "version": "v0.42.0",
+      "go_sum": "h1:chiH31gIWm57EkTXpwnqf8qeuMUi0yekh6mT2AvFlqI=",
+      "products": [
+        "amneziawg-go"
+      ]
+    },
+    {
+      "name": "golang.org/x/crypto",
+      "version": "v0.56.0",
+      "go_sum": "h1:GUh5Ii4J5jtcseSMiRqr1jXCNHoxjeV9Fmekc2oLy6Y=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "golang.org/x/exp",
+      "version": "v0.0.0-20240506185415-9bf2ced13842",
+      "go_sum": "h1:vr/HnozRka3pE4EsMEg1lgkXJkTFJCVUX+S/ZT6wYzM=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "golang.org/x/net",
+      "version": "v0.44.0",
+      "go_sum": "h1:evd8IRDyfNBMBTTY5XRF1vaZlD+EmWx6x8PkhR04H/I=",
+      "products": [
+        "amneziawg-go"
+      ]
+    },
+    {
+      "name": "golang.org/x/net",
+      "version": "v0.58.0",
+      "go_sum": "h1:ynWG7rqYi4ccpTEuPZ2QGWHktVEM9DMCj9yzDE0Q7To=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "golang.org/x/sync",
+      "version": "v0.22.0",
+      "go_sum": "h1:SZjpbeLmrCk4xhRSZFNZW5gFUeCeFgjekvI/+gfScek=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "golang.org/x/sys",
+      "version": "v0.36.0",
+      "go_sum": "h1:KVRy2GtZBrk1cBYA7MKu5bEZFxQk4NIDV6RLVcC8o0k=",
+      "products": [
+        "amneziawg-go"
+      ]
+    },
+    {
+      "name": "golang.org/x/sys",
+      "version": "v0.47.0",
+      "go_sum": "h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "golang.org/x/text",
+      "version": "v0.41.0",
+      "go_sum": "h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "golang.org/x/time",
+      "version": "v0.14.0",
+      "go_sum": "h1:MRx4UaLrDotUKUdCIqzPC48t1Y9hANFKIRpNx+Te8PI=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "golang.zx2c4.com/wireguard",
+      "version": "v0.0.0-20250521234502-f333402bd9cb",
+      "go_sum": "h1:whnFRlWMcXI9d+ZbWg+4sHnLp52d5yiIPUxMBSt4X9A=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "google.golang.org/genproto/googleapis/rpc",
+      "version": "v0.0.0-20260526163538-3dc84a4a5aaa",
+      "go_sum": "h1:mZHHdPZl0dbGHCflZgAq/Q468DWVFcU2whhB2KAo8fk=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "google.golang.org/grpc",
+      "version": "v1.83.2",
+      "go_sum": "h1:EManeRomTObA0BU7I8vXgg/78uE5MJ9M8B39EX2WscU=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "google.golang.org/protobuf",
+      "version": "v1.36.12",
+      "go_sum": "h1:pJOKDDOyeXErUroCihFAd5LQuwXBSpVnKGrj5o/fwxc=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "gopkg.in/yaml.v2",
+      "version": "v2.4.0",
+      "go_sum": "h1:D8xgwECY7CYvx+Y2n4sBz93Jn9JRvxdiyyo8CTfuKaY=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "gvisor.dev/gvisor",
+      "version": "v0.0.0-20260122175437-89a5d21be8f0",
+      "go_sum": "h1:Lk6hARj5UPY47dBep70OD/TIMwikJ5fGUGX0Rm3Xigk=",
+      "products": [
+        "xray-core"
+      ]
+    },
+    {
+      "name": "lukechampine.com/blake3",
+      "version": "v1.4.1",
+      "go_sum": "h1:I3Smz7gso8w4/TunLKec6K2fn+kyKtDxr/xcQEN84Wg=",
+      "products": [
+        "xray-core"
+      ]
+    }
+  ]
+}

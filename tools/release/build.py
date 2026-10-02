@@ -40,18 +40,29 @@ for line in (root / "deploy/versions.yml").read_text().splitlines():
     if line.startswith("corpvpn_") and ": " in line:
         key, value = line.split(": ", 1);pins[key] = value.strip('"')
 for name, version_key, commit_key, license_id in [
-        ("xray-core", "corpvpn_xray_version", "", "MPL-2.0"),
+        ("xray-core", "corpvpn_xray_version", "corpvpn_xray_commit", "MPL-2.0"),
         ("amneziawg-go", "corpvpn_amneziawg_go_version", "corpvpn_amneziawg_go_commit", "MIT"),
         ("amneziawg-tools", "corpvpn_amneziawg_tools_version", "corpvpn_amneziawg_tools_commit", "GPL-2.0-only"),
-        ("go", "corpvpn_go_version", "", "BSD-3-Clause")]:
+        ("go", "corpvpn_go_version", "", "BSD-3-Clause"),
+        ("go", "corpvpn_xray_go_version", "", "BSD-3-Clause")]:
     component = {"type": "application", "name": name, "version": pins[version_key], "licenses": [{"license": {"id": license_id}}]}
     if commit_key:component["properties"] = [{"name": "corpvpn:git-commit", "value": pins[commit_key]}]
+    if name == "xray-core":
+        component["version"] += "-" + pins["corpvpn_xray_build_revision"]
+        component["properties"].extend([
+            {"name": "corpvpn:go-mod-sha256", "value": hashlib.sha256((root / "deploy/ansible/roles/xray/files/xray-go.mod").read_bytes()).hexdigest()},
+            {"name": "corpvpn:go-sum-sha256", "value": hashlib.sha256((root / "deploy/ansible/roles/xray/files/xray-go.sum").read_bytes()).hexdigest()}])
     components.append(component)
+for module in json.loads((root / "tools/release/native-modules.json").read_text())["modules"]:
+    components.append({"type": "library", "name": module["name"], "version": module["version"],
+                       "purl": "pkg:golang/" + module["name"] + "@" + module["version"],
+                       "properties": [{"name": "corpvpn:go-module-checksum", "value": module["go_sum"]},
+                                      {"name": "corpvpn:native-products", "value": ",".join(module["products"])}]})
 sbom = {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
         "metadata": {"component": {"type": "application", "name": "CorpVPN", "version": version},
                      "properties": [{"name": "corpvpn:source-commit", "value": sha},
                                     {"name": "corpvpn:source-tree", "value": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=root).decode().strip()},
-                                    {"name": "corpvpn:inventory-scope", "value": "Python lock union across supported Python versions and downloaded components; distribution packages are managed by the host OS"}]},
+                                    {"name": "corpvpn:inventory-scope", "value": "Python lock union across supported Python versions, pinned native sources and their embedded Go modules; distribution packages are managed by the host OS"}]},
         "components": components}
 (out / "corpvpn-sbom.cdx.json").write_text(json.dumps(sbom, indent=2) + "\n")
 report = root / "docs/RELEASE-TESTS.md"

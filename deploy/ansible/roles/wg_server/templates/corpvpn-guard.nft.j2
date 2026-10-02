@@ -15,8 +15,15 @@ table inet corpvpn_guard {
         elements = { {{ wg_server_guard_deny_v4 | join(', ') }} }
     }
 
+    chain input {
+        type filter hook input priority filter - 10; policy accept;
+        iifname { {{ clients }} } meta nfproto ipv6 counter drop
+        iifname { {{ clients }} } ip daddr @deny_v4 counter drop
+    }
+
     chain forward {
         type filter hook forward priority filter - 10; policy accept;
+        iifname { {{ clients }} } meta nfproto ipv6 counter drop
         iifname { {{ clients }} } ip daddr @deny_v4 counter drop
 {% if not (vpn_panel_client_to_client | bool) %}
         iifname { {{ clients }} } oifname { {{ clients }} } counter drop

@@ -1,0 +1,35 @@
+---
+- name: Go | Architecture
+  ansible.builtin.set_fact:
+    common_go_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_architecture] }}"
+- name: Go | Directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ common_go_cache }}"
+    - "{{ common_go_root }}"
+- name: Go | Verified toolchain archive
+  ansible.builtin.get_url:
+    url: "{{ corpvpn_go_url }}/go{{ common_go_version }}.linux-{{ common_go_arch }}.tar.gz"
+    dest: "{{ common_go_cache }}/go{{ common_go_version }}.linux-{{ common_go_arch }}.tar.gz"
+    checksum: "sha256:{{ common_go_sha256[common_go_arch] }}"
+    owner: root
+    group: root
+    mode: "0644"
+  environment: "{{ vpn_panel_proxy_env }}"
+- name: Go | Unpack private toolchain
+  ansible.builtin.unarchive:
+    src: "{{ common_go_cache }}/go{{ common_go_version }}.linux-{{ common_go_arch }}.tar.gz"
+    dest: "{{ common_go_root }}"
+    remote_src: true
+    creates: "{{ common_go_root }}/go/bin/go"
+- name: Go | Check pinned version
+  ansible.builtin.command:
+    argv: ["{{ common_go_root }}/go/bin/go", version]
+  register: common_go_version_out
+  changed_when: false
+  failed_when: ('go' ~ common_go_version ~ ' ') not in common_go_version_out.stdout

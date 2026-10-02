@@ -24,6 +24,7 @@
     mode: "{{ item.mode }}"
   loop:
     - { path: "{{ xray_release_dir }}", group: root, mode: "0755" }
+    - { path: "{{ xray_upstream_assets_dir }}", group: root, mode: "0755" }
     - { path: "{{ xray_cache_dir }}", group: root, mode: "0755" }
     - { path: "{{ xray_asset_dir }}", group: root, mode: "0755" }
     - { path: "{{ vpn_panel_xray_config_dir }}", group: "{{ xray_user }}", mode: "0750" }
@@ -39,9 +40,34 @@
 - name: Xray | Unpack release
   ansible.builtin.unarchive:
     src: "{{ xray_cache_dir }}/xray-{{ corpvpn_xray_version }}-{{ ansible_architecture }}.zip"
-    dest: "{{ xray_release_dir }}"
+    dest: "{{ xray_upstream_assets_dir }}"
     remote_src: true
-    creates: "{{ xray_release_dir }}/xray"
+    include: [geoip.dat, geosite.dat]
+
+- name: Xray | Verify installed security build
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import hashlib, json, pathlib, sys
+        try:
+            stamp = json.loads(pathlib.Path(sys.argv[1]).read_text())
+            binary = pathlib.Path(sys.argv[2])
+            assert stamp["build_id"] == sys.argv[3]
+            assert stamp["sha256"] == hashlib.sha256(binary.read_bytes()).hexdigest()
+        except (OSError, ValueError, KeyError, AssertionError):
+            sys.exit(1)
+      - "{{ xray_build_stamp }}"
+      - "{{ xray_release_dir }}/xray"
+      - "{{ xray_build_id }}"
+  register: xray_build_check
+  changed_when: false
+  failed_when: false
+
+- name: Xray | Build pinned source with security dependency locks
+  ansible.builtin.include_tasks: build.yml
+  when: xray_build_check.rc != 0
 
 - name: Xray | Executable
   ansible.builtin.file:
@@ -60,7 +86,7 @@
 
 - name: Xray | Assets
   ansible.builtin.copy:
-    src: "{{ xray_release_dir }}/{{ item }}"
+    src: "{{ xray_upstream_assets_dir }}/{{ item }}"
     dest: "{{ xray_asset_dir }}/{{ item }}"
     remote_src: true
     mode: "0644"

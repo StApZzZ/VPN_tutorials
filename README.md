@@ -8,7 +8,7 @@ Start with [QUICKSTART.md](QUICKSTART.md). Read the [architecture](docs/ARCHITEC
 
 The panel and Xray listen on loopback. nginx shares TCP 443 using TLS SNI: the REALITY decoy name goes to Xray on 127.0.0.1:8443; other names go to the panel's TLS listener on 127.0.0.1:8444. The default client pools are 10.66.0.0/22 and 10.66.4.0/22, with UDP ports 51820 and 51821. Network policy is enforced at boot and after changes. VPN clients cannot reach loopback, link-local metadata or one another by default.
 
-The interface defaults to English and offers Russian. All UI assets are served locally under a restrictive Content Security Policy. Component versions and checksums are in `deploy/versions.yml`; Python installations use `panel/requirements.lock` with hashes.
+The interface defaults to English and offers Russian. All UI assets are served locally under a restrictive Content Security Policy. Component versions and checksums are in `deploy/versions.yml`; Python installations use `panel/requirements.lock` with hashes. Xray and AmneziaWG are built from pinned sources; the release SBOM includes their embedded Go modules.
 
 Target operating systems are Ubuntu 22.04/24.04 and Debian 12/13. See the [support matrix](docs/SUPPORT.md) and release test report for verified configurations. HA, PostgreSQL, SCIM, RHEL and IPv6 tunnels are outside v2. WG/AWG configurations capture IPv6 and drop it at the IPv4 gateway; split tunnels preserve IPv4 local internet access. VLESS client JSON blocks IPv6 within the proxy. Applications outside the proxy require a client firewall or TUN client to prevent bypass.
 

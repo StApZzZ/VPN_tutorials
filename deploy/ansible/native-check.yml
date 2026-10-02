@@ -1,0 +1,48 @@
+---
+- name: Compile and audit the production native dependencies
+  hosts: all
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../versions.yml
+  tasks:
+    - name: Load product defaults and check platform
+      ansible.builtin.include_role:
+        name: preflight
+        public: true
+    - name: Build prerequisites
+      ansible.builtin.apt:
+        name: [git, curl, build-essential, pkg-config, libmnl-dev]
+        state: present
+        update_cache: true
+        lock_timeout: 300
+    - name: Product state directory
+      ansible.builtin.file:
+        path: "{{ vpn_panel_state_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+    - name: Build the production AmneziaWG sources
+      ansible.builtin.include_role:
+        name: awg_server
+        tasks_from: build.yml
+      vars:
+        awg_server_go_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_architecture] }}"
+        awg_server_iface_present: {rc: 1}
+    - name: Build and audit the production Xray sources
+      ansible.builtin.include_role:
+        name: xray
+        tasks_from: native-check.yml
+      vars:
+        xray_manage_service: false
+    - name: Verify reviewed native dependency inventory
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../tools/release/check_native.py"
+          - --go
+          - /usr/local/lib/corpvpn/go-{{ corpvpn_xray_go_version }}/go/bin/go
+          - --xray
+          - /usr/local/lib/corpvpn/xray-{{ corpvpn_xray_version }}-{{ corpvpn_xray_build_revision }}/xray
+      changed_when: false

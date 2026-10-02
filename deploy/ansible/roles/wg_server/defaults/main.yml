@@ -23,6 +23,6 @@ wg_server_client_ifaces: "{{ [wg_server_iface, vpn_panel_awg_interface] }}"
 # Link-local covers the metadata services of AWS, Azure, GCP and OpenStack;
 # 100.100.100.200 is Alibaba Cloud's.
 wg_server_guard_deny_v4: >-
-  {{ ['169.254.0.0/16', '100.100.100.200/32']
+  {{ ['0.0.0.0/8', '127.0.0.0/8', '169.254.0.0/16', '100.100.100.200/32', '224.0.0.0/3']
      + (vpn_panel_forward_deny_cidrs | reject('search', ':') | list)
      + ([vpn_panel_site_link_network] if vpn_panel_split_mode | bool else []) }}

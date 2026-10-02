@@ -6,6 +6,10 @@
 table inet corpvpn_policy
 delete table inet corpvpn_policy
 table inet corpvpn_policy {
+    chain input {
+        type filter hook input priority filter - 5; policy accept;
+        iifname { {{ vpn_panel_tunnel_ifaces | map('to_json') | join(', ') }} } counter drop
+    }
     chain forward {
         type filter hook forward priority filter - 5; policy accept;
         iifname { {{ vpn_panel_tunnel_ifaces | map('to_json') | join(', ') }} } counter drop

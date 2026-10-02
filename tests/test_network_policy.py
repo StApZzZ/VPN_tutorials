@@ -147,11 +147,13 @@ def test_split_default_profile_drops_unknown_tunnel_addresses():
     assert text.rstrip().endswith("        counter drop\n    }\n}")
 
 
-def test_always_denied_destinations_come_before_any_profile(monkeypatch):
+@pytest.mark.parametrize("hook", ["input", "forward"])
+def test_always_denied_destinations_come_before_any_profile(monkeypatch, hook):
     monkeypatch.setattr(config, "NETWORK_POLICY_DENY_CIDRS", ("172.31.0.0/16",))
     wide_open = np.Group(profile=profile(id="a", allowed_cidrs=["0.0.0.0/0"]), addresses=["10.66.0.2"], devices=1)
     text = np.render_nft([wide_open], profile(id="d"), [])
-    rules = text.split("chain forward {", 1)[1]
+    rules = text.split("chain " + hook + " {", 1)[1].split("\n    }", 1)[0]
+    assert "type filter hook " + hook in rules
     assert rules.index("ip daddr @always_denied counter drop") < rules.index("@p1_allowed accept")
     denied = text.split("set always_denied {", 1)[1].split("}", 1)[0]
     for cidr in ("0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "100.100.100.200", "10.99.0.0/30",

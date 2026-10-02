@@ -1,0 +1,29 @@
+---
+- name: Native | Xray build directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ xray_release_dir }}"
+    - "{{ xray_cache_dir }}/native-check"
+- name: Native | Build the production Xray source
+  ansible.builtin.include_tasks: build.yml
+- name: Native | Install pinned vulnerability checker
+  ansible.builtin.command:
+    argv: ["{{ xray_go_root }}/go/bin/go", install, golang.org/x/vuln/cmd/govulncheck@v1.8.0]
+  environment: "{{ xray_native_check_env }}"
+  changed_when: true
+- name: Native | Check the exact locked source and imported packages
+  ansible.builtin.command:
+    argv: ["{{ xray_cache_dir }}/native-check/govulncheck", ./main/...]
+    chdir: "{{ xray_source_dir }}"
+  environment: "{{ xray_native_check_env }}"
+  changed_when: false
+- name: Native | Check the production AmneziaWG binary
+  ansible.builtin.command:
+    argv: ["{{ xray_cache_dir }}/native-check/govulncheck", -mode=binary, /usr/local/bin/amneziawg-go]
+  environment: "{{ xray_native_check_env }}"
+  changed_when: false

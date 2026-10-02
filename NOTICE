@@ -26,12 +26,18 @@ WireGuard tools and kernel support
 Xray-core
   Source: https://github.com/XTLS/Xray-core
   License: Mozilla Public License 2.0 (LICENSE in the pinned source tree).
+  CorpVPN builds the pinned commit with the replacement go.mod/go.sum in
+  deploy/ansible/roles/xray/files; these files update security dependencies.
+  The complete pinned source, notices and modified manifests remain installed
+  in /usr/local/src/corpvpn. Include them when redistributing a binary image.
 
 Go
   Source: https://go.dev/
-  License: BSD-style license; downloaded for building AmneziaWG.
+  License: BSD-style license; downloaded for building AmneziaWG and Xray.
 
 nginx, Python, OpenSSL, SQLite and operating-system packages retain their own
 licenses in the installed distribution. Python package metadata and the release
 SBOM identify runtime dependencies. No external UI fonts or icon libraries are
-bundled. Component versions and source revisions are in deploy/versions.yml.
+bundled. Component versions and source revisions are in deploy/versions.yml. The Go
+module inventory is in tools/release/native-modules.json; module dependencies
+retain their own license files in the checksum-verified Go module cache.

@@ -1,0 +1,101 @@
+---
+- name: Xray | Private Go toolchain
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: go.yml
+  vars:
+    common_go_version: "{{ corpvpn_xray_go_version }}"
+    common_go_sha256: "{{ corpvpn_xray_go_sha256 }}"
+    common_go_root: "{{ xray_go_root }}"
+    common_go_cache: "{{ xray_cache_dir }}"
+- name: Xray | Pinned source checkout
+  ansible.builtin.git:
+    repo: "{{ corpvpn_xray_repo }}"
+    dest: "{{ xray_source_dir }}"
+    version: "v{{ corpvpn_xray_version }}"
+    depth: 1
+    force: true
+  register: xray_source
+  environment: "{{ vpn_panel_proxy_env }}"
+- name: Xray | Verify source commit
+  ansible.builtin.assert:
+    that: xray_source.after == corpvpn_xray_commit
+    quiet: true
+- name: Xray | Install locked dependency manifests
+  ansible.builtin.copy:
+    src: "xray-{{ item }}"
+    dest: "{{ xray_source_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [go.mod, go.sum]
+- name: Xray | Download, verify and build locked modules
+  environment: >-
+    {{ vpn_panel_proxy_env | combine({
+      'GOTOOLCHAIN': 'local', 'GOFLAGS': '-mod=readonly -buildvcs=false',
+      'GOPROXY': xray_goproxy, 'GOSUMDB': 'sum.golang.org', 'CGO_ENABLED': '0',
+      'GOPATH': xray_cache_dir ~ '/gopath', 'GOCACHE': xray_cache_dir ~ '/gocache',
+      'PATH': xray_go_root ~ '/go/bin:' ~ ansible_env.PATH}) }}
+  block:
+    - name: Xray | Download modules covered by go.sum
+      ansible.builtin.command:
+        argv: ["{{ xray_go_root }}/go/bin/go", mod, download]
+        chdir: "{{ xray_source_dir }}"
+      changed_when: true
+    - name: Xray | Verify module contents
+      ansible.builtin.command:
+        argv: ["{{ xray_go_root }}/go/bin/go", mod, verify]
+        chdir: "{{ xray_source_dir }}"
+      changed_when: false
+    - name: Xray | Build security revision
+      ansible.builtin.command:
+        argv:
+          - "{{ xray_go_root }}/go/bin/go"
+          - build
+          - -trimpath
+          - -buildvcs=false
+          - -ldflags=-s -w -buildid=
+          - -o
+          - "{{ xray_source_dir }}/xray.new"
+          - ./main
+        chdir: "{{ xray_source_dir }}"
+      changed_when: true
+- name: Xray | Verify dependency manifests were not changed by the build
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import hashlib, pathlib, sys
+        root = pathlib.Path(sys.argv[1])
+        for name, expected in zip(("go.mod", "go.sum"), sys.argv[2:]):
+            assert hashlib.sha256((root / name).read_bytes()).hexdigest() == expected, name
+      - "{{ xray_source_dir }}"
+      - "{{ lookup('file', role_path ~ '/files/xray-go.mod', rstrip=false) | hash('sha256') }}"
+      - "{{ lookup('file', role_path ~ '/files/xray-go.sum', rstrip=false) | hash('sha256') }}"
+  changed_when: false
+- name: Xray | Install built binary atomically
+  ansible.builtin.copy:
+    src: "{{ xray_source_dir }}/xray.new"
+    dest: "{{ xray_release_dir }}/xray"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Xray | restart
+- name: Xray | Record verified build
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import hashlib, json, pathlib, sys
+        binary = pathlib.Path(sys.argv[2])
+        stamp = pathlib.Path(sys.argv[1])
+        stamp.write_text(json.dumps({"build_id": sys.argv[3],
+            "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}, sort_keys=True) + "\n")
+        stamp.chmod(0o644)
+      - "{{ xray_build_stamp }}"
+      - "{{ xray_release_dir }}/xray"
+      - "{{ xray_build_id }}"
+  changed_when: true

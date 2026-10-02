@@ -134,20 +134,36 @@
     owner: root
     group: root
     mode: "0600"
+  register: site_link_config
   vars:
     site_link_split_dns: >-
       {{ site_link_side == 'gateway' and vpn_panel_corp_domains | length > 0
          and site_link_resolved.stdout | default('') | trim == 'active' }}
   notify: Restart site link
 
+# Apply configuration before starting an inactive link. Starting it first and
+# restarting it again can discard a handshake that the connector just completed.
+- name: Site link | Apply pending configuration
+  ansible.builtin.meta: flush_handlers
+
 - name: Site link | Enable the link
   ansible.builtin.systemd:
     name: wg-quick@{{ site_link_iface }}
     enabled: true
     state: started
+  register: site_link_start
 
-- name: Site link | Apply pending restarts before the checks
-  ansible.builtin.meta: flush_handlers
+# The gateway is passive. If it restarted while the connector retained an old
+# session, reconnect the connector after both hosts have finished applying changes.
+- name: Site link | Reconnect after gateway changes
+  ansible.builtin.systemd:
+    name: wg-quick@{{ site_link_iface }}
+    state: restarted
+  when:
+    - site_link_side == 'connector'
+    - >-
+      hostvars[site_link_gateway_host].site_link_config.changed | default(false)
+      or hostvars[site_link_gateway_host].site_link_start.changed | default(false)
 
 # Docker's FORWARD policy DROP would drop every corporate packet on the connector.
 - name: Site link | Docker integration on the connector
@@ -160,7 +176,7 @@
     - site_link_side == 'connector'
     - corpvpn_docker_active | bool
 
-- name: Site link | Wait for the handshake (connector side)
+- name: Site link | Wait for a handshake on both sides
   ansible.builtin.shell: |
     set -o pipefail
     for i in $(seq 1 30); do
@@ -174,7 +190,6 @@
   register: site_link_handshake
   changed_when: false
   failed_when: false
-  when: site_link_side == 'connector'
 
 - name: Site link | Stop without a handshake
   ansible.builtin.fail:
@@ -183,7 +198,6 @@
       {{ site_link_gateway_endpoint or hostvars[site_link_gateway_host].ansible_host | default(site_link_gateway_host) }}
       from the connector (cloud security group, a firewall on the gateway, the office's outbound firewall).
   when:
-    - site_link_side == 'connector'
     - site_link_handshake.rc != 0
 
 - name: Site link | The gateway reaches the connector through the link

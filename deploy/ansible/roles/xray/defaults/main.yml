@@ -5,8 +5,20 @@
 # start the panel owns the clients and the routing; re-runs only update the parts
 # listed in the seed template (listen address, REALITY server name, outbounds).
 
+xray_manage_service: true
 xray_user: xray
-xray_release_dir: /usr/local/lib/corpvpn/xray-{{ corpvpn_xray_version }}
+xray_release_dir: /usr/local/lib/corpvpn/xray-{{ corpvpn_xray_version }}-{{ corpvpn_xray_build_revision }}
+xray_upstream_assets_dir: /var/cache/corpvpn/xray-assets-{{ corpvpn_xray_version }}
+xray_source_dir: /usr/local/src/corpvpn/xray-{{ corpvpn_xray_commit }}
+xray_go_root: /usr/local/lib/corpvpn/go-{{ corpvpn_xray_go_version }}
+xray_goproxy: https://proxy.golang.org,direct
+xray_build_stamp: "{{ xray_release_dir }}/build.json"
+xray_build_id: >-
+  {{ corpvpn_xray_commit }} go{{ corpvpn_xray_go_version }} {{ ansible_architecture }}
+  {{ lookup('file', role_path ~ '/files/xray-go.mod', rstrip=false) | hash('sha256') }}
+  {{ lookup('file', role_path ~ '/files/xray-go.sum', rstrip=false) | hash('sha256') }}
+  CGO_ENABLED=0 trimpath buildvcs=false
+
 xray_asset_dir: /usr/local/share/xray
 xray_cache_dir: /var/cache/corpvpn
 xray_seed_path: "{{ vpn_panel_xray_config_dir }}/corpvpn-seed.json"
@@ -38,3 +50,9 @@ vpn_panel_xray_egress_guard: true
 xray_guard_deny_v4: >-
   {{ ['127.0.0.0/8', '169.254.0.0/16', '100.100.100.200/32']
      + (vpn_panel_forward_deny_cidrs | reject('search', ':') | list) }}
+
+xray_native_check_env: >-
+  {{ vpn_panel_proxy_env | combine({
+    'GOTOOLCHAIN': 'local', 'CGO_ENABLED': '0', 'GOSUMDB': 'sum.golang.org',
+    'GOBIN': xray_cache_dir ~ '/native-check', 'GOPATH': xray_cache_dir ~ '/gopath',
+    'GOCACHE': xray_cache_dir ~ '/gocache', 'PATH': xray_go_root ~ '/go/bin:' ~ ansible_env.PATH}) }}
