@@ -49,7 +49,8 @@ class SystemdUnitStops(unittest.TestCase):
                     result = subprocess.run([sys.executable, "-m", "ansible.cli.playbook", "-i", "localhost,",
                                              "-c", "local", str(path)], stdin=subprocess.DEVNULL,
                                             capture_output=True, text=True,
-                                            env={**os.environ, "ANSIBLE_LOCAL_TEMP": temporary + "/controller",
+                                            env={**os.environ, "ANSIBLE_HOME": temporary + "/ansible-home",
+                                                 "ANSIBLE_LOCAL_TEMP": temporary + "/controller",
                                                  "ANSIBLE_REMOTE_TEMP": temporary + "/remote"})
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 for name in names:
