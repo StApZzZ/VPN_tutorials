@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Run CorpVPN directory sync every {{ vpn_panel_directory_sync_interval }}
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec={{ vpn_panel_directory_sync_interval }}
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

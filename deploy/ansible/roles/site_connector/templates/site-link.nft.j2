@@ -1,0 +1,28 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+# Site connector: traffic arriving over the link may reach the corporate ranges
+# only, and leaves into the LAN masqueraded as this host (LAN routers need no
+# route back to the VPN subnets). Loaded by wg-quick PostUp; own table, no flush.
+{% set lan = site_link_lan_iface or ansible_default_ipv4.interface %}
+{% set sources = [site_link_gateway_address.split('/')[0] ~ '/32'] + site_link_client_nets %}
+table inet corpvpn_site
+delete table inet corpvpn_site
+table inet corpvpn_site {
+    set corp_v4 {
+        type ipv4_addr
+        flags interval
+        auto-merge
+        elements = { {{ site_link_corp_cidrs | reject('search', ':') | join(', ') }} }
+    }
+
+    chain forward {
+        type filter hook forward priority filter - 5; policy accept;
+        iifname "{{ site_link_iface }}" meta nfproto ipv6 counter drop
+        iifname "{{ site_link_iface }}" ip daddr != @corp_v4 counter drop
+    }
+
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ip saddr { {{ sources | join(', ') }} } oifname "{{ lan }}" counter masquerade
+    }
+}

@@ -1,0 +1,10 @@
+---
+- name: WireGuard | reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+# corpvpn-nat is a oneshot without RemainAfterExit: every start loads the files.
+- name: WireGuard | load the nft tables
+  ansible.builtin.systemd:
+    name: corpvpn-nat.service
+    state: started

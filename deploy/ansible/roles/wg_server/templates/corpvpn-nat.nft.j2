@@ -1,0 +1,21 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+# NAT and MSS clamping for VPN clients. Own table, replaced atomically; the
+# access-profile policy lives in table inet corpvpn_policy (loaded by the panel),
+# the client baseline in table inet corpvpn_guard.
+{% set tunnels %}{% for i in wg_server_nat_exclude_ifaces %}"{{ i }}"{{ ", " if not loop.last else "" }}{% endfor %}{% endset %}
+table inet corpvpn_nat
+delete table inet corpvpn_nat
+table inet corpvpn_nat {
+    chain forward {
+        type filter hook forward priority mangle; policy accept;
+        # Clients run MTU 1280-1420: clamp TCP MSS to the route MTU both ways.
+        iifname { {{ tunnels }} } tcp flags syn tcp option maxseg size set rt mtu
+        oifname { {{ tunnels }} } tcp flags syn tcp option maxseg size set rt mtu
+    }
+
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ip saddr { {{ wg_server_client_nets | join(', ') }} } oifname != { {{ tunnels }} } counter masquerade
+    }
+}

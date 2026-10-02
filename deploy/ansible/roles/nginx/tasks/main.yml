@@ -1,33 +1,277 @@
-- name: Nginx | Render site config
+---
+# Panel vhost and, with vless, the TLS-SNI router that shares TCP 443 with Xray.
+# TLS modes (vpn_panel_tls_mode):
+#   letsencrypt - certbot (webroot): HTTP serves only ACME challenges until the
+#                 certificate exists, then redirects to HTTPS
+#   selfsigned  - generated here, renewed when the name changes or it expires
+#   custom      - the operator's certificate (copied from the deploy machine, or
+#                 already on the host)
+#   none        - plain HTTP for a TLS reverse proxy in front (only the addresses
+#                 in vpn_panel_trusted_proxy_cidrs may connect when it is set)
+
+- name: Nginx | Settings
+  ansible.builtin.assert:
+    that:
+      - vpn_panel_tls_mode != 'none' or (vpn_panel_trusted_proxy_cidrs | length > 0 and vpn_panel_public_url.startswith('https://'))
+      - vpn_panel_tls_mode in ['letsencrypt', 'selfsigned', 'custom', 'none']
+      - vpn_panel_tls_mode == 'none' or (vpn_panel_ssl_cert_path | trim and vpn_panel_ssl_key_path | trim)
+      - vpn_panel_tls_mode != 'letsencrypt' or (nginx_server_name != '_' and vpn_panel_certbot_email | trim)
+      - vpn_panel_nginx_enabled | bool or 'vless' not in vpn_panel_enabled_protocols
+    fail_msg: >-
+      vpn_panel_tls_mode must be letsencrypt, selfsigned, custom or none; every mode but none needs
+      vpn_panel_ssl_cert_path and vpn_panel_ssl_key_path; letsencrypt needs a DNS name
+      (vpn_panel_nginx_server_name) and vpn_panel_certbot_email; vless needs nginx (TCP 443).
+    quiet: true
+
+- name: Nginx | Stream module (TCP 443 is shared with Xray)
+  ansible.builtin.apt:
+    name: libnginx-mod-stream
+    state: present
+    lock_timeout: 600
+    policy_rc_d: 101
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - "'vless' in vpn_panel_enabled_protocols"
+
+- name: Nginx | Certificate directory
+  ansible.builtin.file:
+    path: "{{ vpn_panel_ssl_cert_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode in ['selfsigned', 'custom']
+    - not vpn_panel_ssl_cert_path.startswith('/etc/ssl/')
+
+# --- custom: the operator's certificate ----------------------------------------------------
+- name: Nginx | Operator's certificate
+  ansible.builtin.copy:
+    src: "{{ vpn_panel_tls_cert_src }}"
+    dest: "{{ vpn_panel_ssl_cert_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Nginx | reload
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode == 'custom'
+    - vpn_panel_tls_cert_src | length > 0
+
+- name: Nginx | Operator's private key
+  ansible.builtin.copy:
+    src: "{{ vpn_panel_tls_key_src }}"
+    dest: "{{ vpn_panel_ssl_key_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Nginx | reload
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode == 'custom'
+    - vpn_panel_tls_key_src | length > 0
+
+- name: Nginx | Operator's certificate and key are on the host
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ vpn_panel_ssl_cert_path }}"
+    - "{{ vpn_panel_ssl_key_path }}"
+  register: nginx_custom_files
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode == 'custom'
+
+- name: Nginx | Refuse to fall back to plain HTTP
+  ansible.builtin.assert:
+    that: nginx_custom_files.results | rejectattr('stat.exists') | list | length == 0
+    fail_msg: >-
+      TLS certificate or key missing on the host: {{ nginx_custom_files.results | rejectattr('stat.exists')
+      | map(attribute='item') | join(', ') }}. Copy them there, or set vpn_panel_tls_cert_src /
+      vpn_panel_tls_key_src (quickstart: TLS_CERT_FILE / TLS_KEY_FILE).
+    quiet: true
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode == 'custom'
+
+# --- selfsigned: generated here, renewed before it expires ------------------------------------
+- name: Nginx | Current self-signed certificate
+  ansible.builtin.command: openssl x509 -in {{ vpn_panel_ssl_cert_path }} -noout -checkend 2592000 -ext subjectAltName
+  register: nginx_selfsigned
+  changed_when: false
+  failed_when: false
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode == 'selfsigned'
+
+- name: Nginx | Self-signed certificate (new, renamed, or 30 days before expiry)
+  ansible.builtin.command: >-
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 825
+    -subj "/CN={{ nginx_server_name if nginx_server_name != '_' else vpn_panel_public_host }}"
+    -addext "subjectAltName={{ nginx_selfsigned_san | join(',') }}"
+    -keyout {{ vpn_panel_ssl_key_path }} -out {{ vpn_panel_ssl_cert_path }}
+  changed_when: true
+  notify: Nginx | reload
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode == 'selfsigned'
+    - nginx_selfsigned.rc != 0 or (nginx_selfsigned_san | map('regex_replace', '^IP:', 'IP Address:') | reject('in', nginx_selfsigned.stdout) | list | length >
+      0)
+
+- name: Nginx | Self-signed key is private
+  ansible.builtin.file:
+    path: "{{ vpn_panel_ssl_key_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode == 'selfsigned'
+
+# --- letsencrypt ----------------------------------------------------------------------------------
+- name: Nginx | ACME challenge directory
+  ansible.builtin.file:
+    path: "{{ vpn_panel_nginx_acme_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode == 'letsencrypt'
+
+- name: Nginx | Install certbot
+  ansible.builtin.apt:
+    name: certbot
+    state: present
+    lock_timeout: 600
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode == 'letsencrypt'
+
+- name: Nginx | Check whether the panel certificate exists
+  ansible.builtin.stat:
+    path: "{{ vpn_panel_ssl_cert_path }}"
+  register: nginx_panel_cert
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode != 'none'
+
+# --- site ---------------------------------------------------------------------------------------------
+- name: Nginx | Panel site (HTTP serves only ACME challenges until a certificate exists)
   ansible.builtin.template:
     src: vpn-panel.conf.j2
     dest: /etc/nginx/sites-available/vpn-panel.conf
     owner: root
     group: root
     mode: "0644"
+  vars:
+    panel_ssl_ready: "{{ vpn_panel_tls_mode != 'none' and (nginx_panel_cert.stat.exists | default(false)) }}"
+  notify: Nginx | reload
   when: vpn_panel_nginx_enabled | bool
 
-- name: Nginx | Enable site
+- name: Nginx | Enable the site
   ansible.builtin.file:
     src: /etc/nginx/sites-available/vpn-panel.conf
     dest: /etc/nginx/sites-enabled/vpn-panel.conf
     state: link
+  notify: Nginx | reload
   when: vpn_panel_nginx_enabled | bool
 
-- name: Nginx | Disable default site when present
+- name: Nginx | Disable the default site
   ansible.builtin.file:
     path: /etc/nginx/sites-enabled/default
     state: absent
+  notify: Nginx | reload
   when: vpn_panel_nginx_enabled | bool
 
-- name: Nginx | Ensure service is enabled and restarted
+# modules-enabled/ is included in nginx's main context after the modules are
+# loaded, which is where a stream{} block belongs; nginx.conf stays untouched.
+- name: Nginx | TCP 443 router (REALITY server name to Xray, the rest to the panel)
+  ansible.builtin.template:
+    src: corpvpn-stream.conf.j2
+    dest: /etc/nginx/modules-enabled/90-corpvpn-stream.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Nginx | reload
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - "'vless' in vpn_panel_enabled_protocols"
+
+- name: Nginx | No TCP 443 router without vless
+  ansible.builtin.file:
+    path: /etc/nginx/modules-enabled/90-corpvpn-stream.conf
+    state: absent
+  notify: Nginx | reload
+  when: "'vless' not in vpn_panel_enabled_protocols or not (vpn_panel_nginx_enabled | bool)"
+
+- name: Nginx | Enabled and started
   ansible.builtin.systemd:
     name: nginx
     enabled: true
-    state: restarted
+    state: started
   when: vpn_panel_nginx_enabled | bool
 
-- name: Nginx | Disable service when not requested
+- name: Nginx | Apply the configuration
+  ansible.builtin.meta: flush_handlers
+
+- name: "Nginx | Verify certificate name resolution: {{ nginx_server_name }}"
+  ansible.builtin.command: getent ahostsv4 {{ nginx_server_name }}
+  register: nginx_fqdn_lookup
+  changed_when: false
+  failed_when: false
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode == 'letsencrypt'
+    - not (nginx_panel_cert.stat.exists | default(false))
+
+- name: Nginx | Stop before asking Let's Encrypt for a name that does not resolve
+  ansible.builtin.assert:
+    that: nginx_fqdn_lookup.rc == 0
+    fail_msg: >-
+      {{ nginx_server_name }} does not resolve. Point its A record at this gateway and re-run; each failed
+      validation counts against Let's Encrypt's rate limits.
+    quiet: true
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode == 'letsencrypt'
+    - not (nginx_panel_cert.stat.exists | default(false))
+
+- name: Nginx | Obtain the panel certificate (Let's Encrypt, http-01)
+  ansible.builtin.command:
+    cmd: >-
+      certbot certonly --webroot -w {{ vpn_panel_nginx_acme_root }}
+      -d {{ nginx_server_name }}
+      --non-interactive --agree-tos
+      -m {{ vpn_panel_certbot_email }}
+      --keep-until-expiring
+      --deploy-hook "systemctl reload nginx"
+    creates: "{{ vpn_panel_ssl_cert_path }}"
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode == 'letsencrypt'
+
+- name: Nginx | Panel site with TLS now that the certificate exists
+  ansible.builtin.template:
+    src: vpn-panel.conf.j2
+    dest: /etc/nginx/sites-available/vpn-panel.conf
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    panel_ssl_ready: true
+  notify: Nginx | reload
+  when:
+    - vpn_panel_nginx_enabled | bool
+    - vpn_panel_tls_mode == 'letsencrypt'
+
+- name: Nginx | Serve the final site
+  ansible.builtin.meta: flush_handlers
+
+- name: Nginx | Disable the service when not requested
   ansible.builtin.systemd:
     name: nginx
     enabled: false

@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[Unit]
+Description=CorpVPN: let VPN traffic through Docker's DOCKER-USER chain
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/corpvpn-docker-user
+ExecStop=/usr/local/sbin/corpvpn-docker-user --remove
+
+[Install]
+WantedBy=docker.service

@@ -1,0 +1,28 @@
+# {{ ansible_managed }}
+# TCP 443 is shared between Xray (VLESS / REALITY) and the panel. nginx reads the
+# TLS server name without terminating TLS: the REALITY server name goes to Xray,
+{% if vpn_panel_tls_mode != 'none' %}
+# every other name (or none) to the panel TLS server. Both backends listen on
+{% else %}
+# and so does every other name: the panel has no TLS here, and REALITY hands
+# names it does not serve to its dest. Xray listens on
+{% endif %}
+# loopback and gets the client address in a PROXY protocol header.
+# Included in nginx's main context from modules-enabled/, after the stream module.
+stream {
+    map $ssl_preread_server_name $corpvpn_443_backend {
+        {{ vpn_panel_xray_client_reality_server_name | lower }} {{ vpn_panel_xray_listen }}:{{ vpn_panel_xray_port }};
+        default {{ vpn_panel_xray_listen }}:{{ vpn_panel_nginx_panel_tls_port if vpn_panel_tls_mode != 'none' else vpn_panel_xray_port }};
+    }
+
+    server {
+        listen 443;
+{% if vpn_panel_nginx_ipv6_enabled | bool %}
+        listen [::]:443;
+{% endif %}
+        ssl_preread on;
+        proxy_pass $corpvpn_443_backend;
+        proxy_protocol on;
+        proxy_connect_timeout 5s;
+    }
+}

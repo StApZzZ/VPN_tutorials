@@ -1,0 +1,4 @@
+# vpn_panel_* is the public configuration namespace shared across roles.
+# Renaming it to each role prefix would break documented persistent overrides.
+skip_list:
+  - var-naming[no-role-prefix]

@@ -1,0 +1,12 @@
+flowchart LR
+  Employee --> nginx
+  nginx --> Panel
+  nginx --> Xray
+  Employee --> WG
+  Employee --> AWG
+  WG --> Policy
+  AWG --> Policy
+  Xray --> Policy
+  Policy --> Internet
+  Policy --> Connector
+  Panel --> SQLite

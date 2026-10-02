@@ -1,0 +1,26 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Own chain: removal cannot flush Docker or another application's rules.
+set -eu
+chain=CORPVPN-DOCKER
+if [ "${1:-}" = --remove ]; then
+    while iptables -D DOCKER-USER -j "$chain" 2>/dev/null; do :; done
+    iptables -F "$chain" 2>/dev/null || true
+    iptables -X "$chain" 2>/dev/null || true
+    exit 0
+fi
+iptables -N DOCKER-USER 2>/dev/null || true
+iptables -N "$chain" 2>/dev/null || true
+iptables -F "$chain"
+{% for pair in corpvpn_docker_user_pairs %}
+iptables -A "$chain" -i {{ pair[0] }} -o {{ pair[1] }} -j ACCEPT
+iptables -A "$chain" -i {{ pair[1] }} -o {{ pair[0] }} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+# Remove the old CorpVPN rules when adopting its earlier integration.
+while iptables -D DOCKER-USER -i {{ pair[0] }} -o {{ pair[1] }} -j ACCEPT 2>/dev/null; do :; done
+while iptables -D DOCKER-USER -i {{ pair[1] }} -o {{ pair[0] }} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
+{% endfor %}
+{% for iface in corpvpn_docker_user_pairs | map('first') | unique %}
+while iptables -D DOCKER-USER -i {{ iface }} -j ACCEPT 2>/dev/null; do :; done
+while iptables -D DOCKER-USER -o {{ iface }} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
+{% endfor %}
+iptables -C DOCKER-USER -j "$chain" 2>/dev/null || iptables -I DOCKER-USER -j "$chain"

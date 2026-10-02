@@ -1,0 +1,47 @@
+---
+# false: the panel vhost is not rendered and nginx is stopped (the panel then
+# sits behind the operator's own reverse proxy on this host). Not possible with
+# vless, which needs nginx on TCP 443.
+vpn_panel_nginx_enabled: true
+
+# Add `listen [::]` only when the host has an IPv6 stack; nginx refuses to start
+# on an ipv6-less host otherwise.
+vpn_panel_nginx_ipv6_enabled: "{{ (ansible_all_ipv6_addresses | default([])) | length > 0 }}"
+
+# Panel vhost name and certificate.
+vpn_panel_nginx_server_name: ""
+# The name nginx serves: the setting above, else the gateway's DNS name, else "_".
+nginx_server_name: >-
+  {{ vpn_panel_nginx_server_name | default('', true)
+     or (vpn_panel_server_name if vpn_panel_server_name != '_' else '_') }}
+# Names a self-signed certificate covers.
+nginx_selfsigned_san: >-
+  {{ ((['IP:' ~ nginx_server_name] if nginx_server_name is match('^[0-9.]+$')
+       else (['DNS:' ~ nginx_server_name] if nginx_server_name != '_' else []))
+      + (['IP:' ~ vpn_panel_public_host] if vpn_panel_public_host is match('^[0-9.]+$') else [])) | unique }}
+vpn_panel_ssl_cert_path: ""
+vpn_panel_ssl_key_path: ""
+vpn_panel_certbot_email: ""
+# true: generate a self-signed certificate at vpn_panel_ssl_cert_path /
+# vpn_panel_ssl_key_path (renewed when the name changes or 30 days before it
+# expires). Browsers warn; replace it with a real certificate as soon as possible.
+vpn_panel_tls_self_signed: false
+# letsencrypt | selfsigned | custom | none. Derived from the settings above when
+# not set: no certificate path = none, a path under /etc/letsencrypt/ = certbot,
+# any other path = a certificate provided by the operator.
+vpn_panel_tls_mode: >-
+  {{ 'none' if not (vpn_panel_ssl_cert_path | trim)
+     else ('selfsigned' if vpn_panel_tls_self_signed | bool
+     else ('letsencrypt' if vpn_panel_ssl_cert_path.startswith('/etc/letsencrypt/') else 'custom')) }}
+# custom: certificate (full chain) and key files on the deploy machine, copied to
+# vpn_panel_ssl_cert_path / vpn_panel_ssl_key_path. Empty: those paths are
+# expected to exist on the host already.
+vpn_panel_tls_cert_src: ""
+vpn_panel_tls_key_src: ""
+vpn_panel_nginx_acme_root: /var/www/corpvpn-acme
+
+# Requests per client address (nginx limit_req): sign-in pages and one-shot links
+# per minute, the API per second.
+vpn_panel_nginx_signin_rate: 30r/m
+vpn_panel_nginx_links_rate: 30r/m
+vpn_panel_nginx_api_rate: 20r/s

@@ -1,0 +1,114 @@
+---
+- name: Network policy | Validate settings
+  ansible.builtin.assert:
+    that:
+      - vpn_panel_firewall_conflict_action in ['fail', 'warn', 'manage']
+    fail_msg: "vpn_panel_firewall_conflict_action must be fail, warn or manage."
+    quiet: true
+
+- name: Network policy | Install nftables
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+    lock_timeout: 600
+    policy_rc_d: 101
+
+- name: Network policy | Directory for nftables fragments
+  ansible.builtin.file:
+    path: "{{ vpn_panel_nft_policy_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# --- forwarding ------------------------------------------------------------------
+- name: Network policy | Forwarding, persistent
+  ansible.builtin.include_tasks: forwarding.yml
+  vars:
+    corpvpn_forward_sysctl_file: 99-zz-corpvpn-forward.conf
+    corpvpn_forward_legacy_file: 60-corpvpn-forward.conf
+    corpvpn_forward_comment: "CorpVPN gateway: forward VPN client traffic."
+
+# --- boot-time policy (fail closed) ---------------------------------------------------
+- name: Network policy | Deny-all placeholder directory
+  ansible.builtin.file:
+    path: "{{ vpn_panel_nft_policy_placeholder | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: vpn_panel_network_policy_mode == 'enforce'
+
+- name: Network policy | Deny-all placeholder
+  ansible.builtin.template:
+    src: policy-deny-all.nft.j2
+    dest: "{{ vpn_panel_nft_policy_placeholder }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: vpn_panel_network_policy_mode == 'enforce'
+
+- name: Network policy | Unit that loads the policy before the tunnels
+  ansible.builtin.template:
+    src: corpvpn-policy.service.j2
+    dest: /etc/systemd/system/corpvpn-policy.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: corpvpn_policy_unit
+  when: vpn_panel_network_policy_mode == 'enforce'
+
+- name: Network policy | Enable the policy loader
+  ansible.builtin.systemd:
+    name: corpvpn-policy.service
+    enabled: true
+    daemon_reload: "{{ corpvpn_policy_unit is changed }}"
+  when: vpn_panel_network_policy_mode == 'enforce'
+
+- name: Network policy | Is a policy table loaded?
+  ansible.builtin.command: nft list table inet corpvpn_policy
+  register: corpvpn_policy_table
+  changed_when: false
+  failed_when: false
+
+# First install: the placeholder is in the kernel before wg0 has a single peer.
+# Later runs leave the panel's live table alone.
+- name: Network policy | Load the last policy (or the placeholder) now
+  ansible.builtin.systemd:
+    name: corpvpn-policy.service
+    state: started
+  when:
+    - vpn_panel_network_policy_mode == 'enforce'
+    - corpvpn_policy_table.rc != 0
+
+- name: Network policy | Policy off - stop the loader
+  ansible.builtin.systemd:
+    name: corpvpn-policy.service
+    enabled: false
+  failed_when: false
+  when: vpn_panel_network_policy_mode == 'off'
+
+- name: Network policy | Policy off - remove a table left from enforce mode
+  ansible.builtin.command: nft delete table inet corpvpn_policy
+  changed_when: true
+  when:
+    - vpn_panel_network_policy_mode == 'off'
+    - corpvpn_policy_table.rc == 0
+
+# --- firewalls and Docker --------------------------------------------------------------
+- name: Network policy | Detect firewall conflicts
+  ansible.builtin.include_tasks: detect.yml
+  vars:
+    corpvpn_detect_ifaces: "{{ vpn_panel_tunnel_ifaces }}"
+    corpvpn_detect_udp_ports: >-
+      {{ [vpn_panel_wg_port]
+         + ([vpn_panel_awg_port] if 'awg' in vpn_panel_enabled_protocols else [])
+         + ([vpn_panel_site_link_port] if vpn_panel_split_mode | bool else []) }}
+    corpvpn_detect_tcp_ports: [80, 443]
+
+- name: Network policy | Docker integration
+  ansible.builtin.include_tasks: docker.yml
+  vars:
+    corpvpn_docker_user_pairs: >-
+      {{ vpn_panel_tunnel_ifaces | product(vpn_panel_client_egress_ifaces | unique) | list }}
+  when: corpvpn_docker_active and vpn_panel_docker_user_integration

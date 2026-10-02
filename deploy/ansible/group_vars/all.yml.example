@@ -1,35 +1,89 @@
-# Optional non-secret overrides for deploy/ansible/site.yml.
+# Non-secret overrides for deploy/ansible/site.yml.
+# Copy to group_vars/all.yml (gitignored). quickstart.sh generates this file for you.
+# Placeholders use RFC 5737 / example.com addresses.
 
+# --- Gateway ---------------------------------------------------------------------
+# What employees' clients dial: a DNS name (preferred for a corporate VPN) or an IP.
 vpn_panel_server_name: vpn.example.com
 vpn_panel_public_host: 203.0.113.10
-vpn_panel_fallback_host: 198.51.100.20
+vpn_panel_fallback_host: 203.0.113.10
+# Where wg0/awg0 live. Same host as the panel in single-host mode.
 vpn_panel_wg_endpoint_host: vpn.example.com
 vpn_panel_xray_client_server: vpn.example.com
 
-vpn_panel_awg_settings:
-  endpoint_host: vpn.example.com
-  endpoint_port: 34011
-  dns_servers: "1.1.1.1,1.0.0.1"
-  persistent_keepalive: 25
-  Jc: 0
-  Jmin: 0
-  Jmax: 0
-  S1: 0
-  S2: 0
-  S3: 0
-  S4: 0
-  H1: 0
-  H2: 0
-  H3: 0
-  H4: 0
-  I1: ""
-  I2: ""
-  I3: ""
-  I4: ""
-  I5: ""
+# DNS handed to WG/AWG clients — normally the internal resolver, so split-horizon
+# names resolve inside the tunnel.
+vpn_panel_dns_servers:
+  - 10.0.0.53
 
-vpn_panel_bot_enabled: false
-vpn_panel_bot_username: your_vpn_bot
+# --- Panel web surface -------------------------------------------------------------
+# nginx vhost name + certificate. A path under /etc/letsencrypt/ makes the nginx role
+# issue it with certbot (DNS must already point at the host); any other path is a
+# hand-provisioned (e.g. corporate CA) certificate.
+vpn_panel_nginx_server_name: vpn.example.com
+vpn_panel_ssl_cert_path: /etc/letsencrypt/live/vpn.example.com/fullchain.pem
+vpn_panel_ssl_key_path: /etc/letsencrypt/live/vpn.example.com/privkey.pem
+vpn_panel_certbot_email: it-admin@example.com
+# Absolute base for one-shot config links sent to employees.
+vpn_panel_public_url: https://vpn.example.com
 
+# --- Protocols ---------------------------------------------------------------------
+# wg0 is always installed (awg0 mirrors its peers). The wg_server / awg_server roles
+# generate the keys and the AmneziaWG obfuscation parameters on the host and seed
+# the panel with them — nothing to fill in here. Set vpn_panel_awg_server_public_key /
+# vpn_panel_awg_settings only for an awg0 that was built by hand.
+vpn_panel_enabled_protocols: [wg, awg, vless]
+# vpn_panel_wg_port: 51820
+# vpn_panel_awg_port: 51821
+
+# --- Xray (VLESS / REALITY) ----------------------------------------------------------
+vpn_panel_xray_client_reality_server_name: www.microsoft.com
+vpn_panel_xray_client_reality_public_key: ""
+vpn_panel_xray_client_reality_short_id: ""
 vpn_panel_xray_validate_command: /usr/local/bin/xray run -test -config {config_path}
 vpn_panel_xray_reload_command: /bin/systemctl restart xray
+vpn_panel_xray_direct_ip_rules: []
+# Domain rules route "direct" / "egress" / "block"; unmatched traffic follows
+# vpn_panel_xray_default_route. Egress "direct" = no separate exit.
+vpn_panel_xray_egress_outbound_tag: direct
+vpn_panel_xray_default_route: egress
+
+# --- Network policy (access profiles -> nftables + Xray rules) -------------------------
+# enforce: the panel loads table inet corpvpn_policy on every change. Every corporate
+# range goes into vpn_panel_corp_cidrs: a range a profile does not allow is dropped
+# even on a full tunnel. Split mode (site-connector.yml) routes these via server B.
+vpn_panel_network_policy_mode: enforce
+vpn_panel_corp_cidrs: []
+#  - 10.0.0.0/8
+#  - 192.168.10.0/24
+# warn | fail when firewalld / ufw / Docker could interfere (see the run output).
+vpn_panel_firewall_conflict_action: warn
+
+# --- Metrics -------------------------------------------------------------------------
+# Per-peer traffic / endpoint-change series are personal data. Enable only when your
+# policy allows it.
+vpn_panel_metrics_peer_detail: false
+
+# --- Sign-in and roles (docs/IDP-*.md) ------------------------------------------------
+# Group policies are seeded from these lists on the first start, then edited in the
+# panel (Доступ). Names match as CN, full DN or Keycloak path.
+vpn_panel_auth_admin_groups: [VPN-Admins]
+vpn_panel_auth_operator_groups: [IT-Helpdesk]
+vpn_panel_auth_user_groups: [VPN-Users]
+# Break-glass admin (admin + panel_secret_token) only from the office / jump host:
+vpn_panel_auth_local_allowed_cidrs: []        # e.g. ["10.0.0.0/8"]
+
+# OIDC — Keycloak / ADFS / Entra ID. Register redirect URI
+# https://vpn.example.com/auth/oidc/callback in the IdP.
+vpn_panel_oidc_enabled: false
+vpn_panel_oidc_discovery_url: https://sso.example.com/realms/corp/.well-known/openid-configuration
+vpn_panel_oidc_client_id: corpvpn
+vpn_panel_oidc_redirect_url: https://vpn.example.com/auth/oidc/callback
+
+# LDAP / Active Directory (use ldaps://, or ldap:// + start_tls).
+vpn_panel_ldap_enabled: false
+vpn_panel_ldap_url: ldaps://dc1.corp.example.com
+vpn_panel_ldap_ca_src: ""                      # e.g. files/corp-root-ca.pem
+vpn_panel_ldap_bind_dn: CN=svc-corpvpn,OU=Service Accounts,DC=corp,DC=example,DC=com
+vpn_panel_ldap_user_base_dn: OU=Staff,DC=corp,DC=example,DC=com
+vpn_panel_ldap_group_base_dn: OU=Groups,DC=corp,DC=example,DC=com

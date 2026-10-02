@@ -1,0 +1,169 @@
+---
+- name: Xray | Supported architecture
+  ansible.builtin.assert:
+    that: ansible_architecture in corpvpn_xray_assets
+
+- name: Xray | Service account
+  ansible.builtin.user:
+    name: "{{ xray_user }}"
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+  register: xray_account
+
+- name: Xray | Account uid
+  ansible.builtin.set_fact:
+    xray_account_uid: "{{ xray_account.uid }}"
+
+- name: Xray | Directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ xray_release_dir }}", group: root, mode: "0755" }
+    - { path: "{{ xray_cache_dir }}", group: root, mode: "0755" }
+    - { path: "{{ xray_asset_dir }}", group: root, mode: "0755" }
+    - { path: "{{ vpn_panel_xray_config_dir }}", group: "{{ xray_user }}", mode: "0750" }
+
+- name: Xray | Verified release
+  ansible.builtin.get_url:
+    url: "{{ corpvpn_xray_release_url }}/v{{ corpvpn_xray_version }}/{{ corpvpn_xray_assets[ansible_architecture].file }}"
+    dest: "{{ xray_cache_dir }}/xray-{{ corpvpn_xray_version }}-{{ ansible_architecture }}.zip"
+    checksum: "sha256:{{ corpvpn_xray_assets[ansible_architecture].sha256 }}"
+    mode: "0644"
+  environment: "{{ vpn_panel_proxy_env }}"
+
+- name: Xray | Unpack release
+  ansible.builtin.unarchive:
+    src: "{{ xray_cache_dir }}/xray-{{ corpvpn_xray_version }}-{{ ansible_architecture }}.zip"
+    dest: "{{ xray_release_dir }}"
+    remote_src: true
+    creates: "{{ xray_release_dir }}/xray"
+
+- name: Xray | Executable
+  ansible.builtin.file:
+    path: "{{ xray_release_dir }}/xray"
+    mode: "0755"
+    owner: root
+    group: root
+
+- name: Xray | Active binary
+  ansible.builtin.file:
+    src: "{{ xray_release_dir }}/xray"
+    dest: "{{ vpn_panel_xray_bin_path }}"
+    state: link
+    force: true
+  notify: Xray | restart
+
+- name: Xray | Assets
+  ansible.builtin.copy:
+    src: "{{ xray_release_dir }}/{{ item }}"
+    dest: "{{ xray_asset_dir }}/{{ item }}"
+    remote_src: true
+    mode: "0644"
+  loop: [geoip.dat, geosite.dat]
+  notify: Xray | restart
+
+- name: Xray | Config tool
+  ansible.builtin.copy:
+    src: corpvpn-xray
+    dest: /usr/local/sbin/corpvpn-xray
+    mode: "0755"
+
+- name: Xray | Seed config
+  ansible.builtin.template:
+    src: xray_base_config.json.j2
+    dest: "{{ xray_seed_path }}"
+    mode: "0600"
+
+- name: Xray | Render preserving live keys and clients
+  ansible.builtin.command:
+    argv: >-
+      {{ ['/usr/local/sbin/corpvpn-xray', 'render', '--seed', xray_seed_path, '--config', vpn_panel_xray_base_config_path, '--out',
+      xray_new_config_path, '--group', xray_user, '--secret-stdin'] + (['--rotate'] if vpn_panel_xray_reality_rotate | bool else []) }}
+    stdin: "{{ {'private_key': vpn_panel_xray_reality_private_key, 'short_id': vpn_panel_xray_reality_short_id} | to_json }}"
+  register: xray_render
+  changed_when: (xray_render.stdout | from_json).changed
+  no_log: true
+
+- name: Xray | Check new config # noqa: no-handler - ordered validation/promotion must run here
+  ansible.builtin.command:
+    argv: ["{{ vpn_panel_xray_bin_path }}", run, -test, -format, json, -config, "{{ xray_new_config_path }}"]
+  changed_when: false
+  when: xray_render is changed
+
+- name: Xray | REALITY destination self-test
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/corpvpn-xray, selftest, --config, "{{ xray_new_config_path }}", --xray, "{{ vpn_panel_xray_bin_path }}"]
+  changed_when: false
+  when:
+    - xray_render is changed
+    - vpn_panel_xray_selftest | bool
+    - (xray_render.stdout | from_json).reality_changed
+
+- name: Xray | Promote valid config # noqa: no-handler - ordered validation/promotion must run here
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/corpvpn-xray
+      - install
+      - --new
+      - "{{ xray_new_config_path }}"
+      - --config
+      - "{{ vpn_panel_xray_base_config_path }}"
+      - --group
+      - "{{ xray_user }}"
+  when: xray_render is changed
+  changed_when: true
+  notify: Xray | restart
+
+- name: Xray | Derive client settings from live config
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/corpvpn-xray, pubkey, --config, "{{ vpn_panel_xray_base_config_path }}"]
+  register: xray_public
+  changed_when: false
+
+- name: Xray | Public settings for panel
+  ansible.builtin.set_fact:
+    xray_reality: "{{ xray_public.stdout | from_json }}"
+
+- name: Xray | Egress guard
+  ansible.builtin.template:
+    src: corpvpn-xray.nft.j2
+    dest: /etc/nftables.d/45-corpvpn-xray.nft
+    mode: "0644"
+  register: xray_guard
+  when: vpn_panel_xray_egress_guard | bool
+
+- name: Xray | Load egress guard
+  ansible.builtin.command: nft -f /etc/nftables.d/45-corpvpn-xray.nft
+  changed_when: xray_guard is changed
+  when: vpn_panel_xray_egress_guard | bool
+
+- name: Xray | Service unit
+  ansible.builtin.template:
+    src: xray.service.j2
+    dest: /etc/systemd/system/xray.service
+    mode: "0644"
+  notify:
+    - Xray | reload systemd
+    - Xray | restart
+
+- name: Xray | Apply handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Xray | Service enabled
+  ansible.builtin.systemd:
+    name: xray.service
+    enabled: true
+    state: started
+
+- name: Xray | Stable service # noqa: command-instead-of-module - read-only diagnostics need exact output
+  ansible.builtin.command: systemctl show xray.service -p ActiveState -p SubState -p NRestarts
+  register: xray_stable
+  changed_when: false
+  retries: 5
+  delay: 3
+  until: "'ActiveState=active' in xray_stable.stdout and 'SubState=running' in xray_stable.stdout and 'NRestarts=0' in xray_stable.stdout"

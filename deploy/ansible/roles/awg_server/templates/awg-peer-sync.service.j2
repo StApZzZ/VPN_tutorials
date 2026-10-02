@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Mirror {{ awg_server_wg_iface }} peers onto {{ awg_server_iface }} (AmneziaWG)
+After=awg-quick@{{ awg_server_iface }}.service wg-quick@{{ awg_server_wg_iface }}.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/awg-peer-sync

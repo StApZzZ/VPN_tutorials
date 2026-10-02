@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Periodic {{ awg_server_wg_iface }} -> {{ awg_server_iface }} peer mirror
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec={{ awg_server_peer_sync_interval_sec }}
+
+[Install]
+WantedBy=timers.target

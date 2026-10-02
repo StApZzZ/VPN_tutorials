@@ -1,0 +1,2 @@
+# Operator settings applied last; quickstart never rewrites overrides.yml.
+vpn_panel_network_policy_mode: enforce

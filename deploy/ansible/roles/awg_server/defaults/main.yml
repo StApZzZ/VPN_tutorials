@@ -1,0 +1,34 @@
+---
+# AmneziaWG server (awg0): userspace amneziawg-go built from source (works on any
+# kernel, no DKMS). awg0 mirrors every wg0 peer (awg-peer-sync maps each wg0 pool
+# address to the awg0 address with the same host offset), so one device = one
+# key works over plain WireGuard and over AmneziaWG.
+
+awg_server_iface: "{{ vpn_panel_awg_interface }}"
+awg_server_port: "{{ vpn_panel_awg_port }}"
+awg_server_network: "{{ vpn_panel_awg_network }}"
+# First host address of the pool, e.g. 10.66.4.1/22.
+awg_server_address: "{{ awg_server_network | corpvpn_host_cidr(1) }}"
+awg_server_mtu: 1420
+awg_server_conf_dir: /etc/amnezia/amneziawg
+
+awg_server_wg_iface: "{{ vpn_panel_wg_interface }}"
+awg_server_wg_network: "{{ vpn_panel_wg_network }}"
+awg_server_peer_sync_interval_sec: 30
+
+# Obfuscation parameters. Empty => generated once on the host and kept in
+# {{ awg_server_conf_dir }}/obfuscation.json. They must never change once clients
+# hold configs (every config in the field carries them).
+awg_server_obfuscation: {}
+
+# --- Build (versions and checksums: deploy/versions.yml) ------------------------------
+awg_server_build_dir: /usr/local/src/corpvpn
+awg_server_cache_dir: /var/cache/corpvpn
+# A private Go toolchain: an administrator's /usr/local/go is never used or replaced.
+awg_server_go_root: /usr/local/lib/corpvpn/go-{{ corpvpn_go_version }}
+# Module proxy for the build; point it at an internal mirror when the gateway
+# cannot reach proxy.golang.org.
+awg_server_goproxy: https://proxy.golang.org,direct
+# Rebuilt whenever this changes.
+awg_server_build_id: "go{{ corpvpn_go_version }} amneziawg-go {{ corpvpn_amneziawg_go_commit }} amneziawg-tools {{ corpvpn_amneziawg_tools_commit }}"
+awg_server_build_stamp: "{{ vpn_panel_state_dir }}/amneziawg.build"

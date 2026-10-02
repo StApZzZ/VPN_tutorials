@@ -1,0 +1,48 @@
+---
+# Periodic health check (/usr/local/sbin/corpvpn-healthcheck, every
+# vpn_panel_healthcheck_interval). Results go to the journal
+# (journalctl -u corpvpn-healthcheck) and, when node_exporter's textfile
+# directory exists, to corpvpn_healthcheck_* metrics.
+vpn_panel_healthcheck_interval: 5min
+# Shell command run when a check fails; the summary arrives on its stdin, e.g.
+#   logger -p user.err -t corpvpn
+#   curl -fsS -X POST --data-binary @- https://alerts.example.com/hooks/corpvpn
+vpn_panel_healthcheck_alert_command: ""
+vpn_panel_healthcheck_certificate_min_days: 14
+vpn_panel_healthcheck_backup_max_age_hours: 26
+
+healthcheck_vless: "{{ 'vless' in vpn_panel_enabled_protocols }}"
+healthcheck_awg: "{{ 'awg' in vpn_panel_enabled_protocols }}"
+healthcheck_settings:
+  units: >-
+    {{ (['vpn-panel.service'] if vpn_panel_panel_enabled | bool else [])
+       + (['nginx.service'] if vpn_panel_nginx_enabled | bool else [])
+       + (['xray.service'] if healthcheck_vless | bool else []) }}
+  panel_health_url: >-
+    {{ 'http://' ~ vpn_panel_panel_host ~ ':' ~ vpn_panel_panel_port ~ '/health'
+       if vpn_panel_panel_enabled | bool else '' }}
+  interfaces: >-
+    {{ [{'name': vpn_panel_wg_interface, 'port': vpn_panel_wg_port | int}]
+       + ([{'name': vpn_panel_awg_interface, 'port': vpn_panel_awg_port | int}] if healthcheck_awg | bool else []) }}
+  tcp_ports: >-
+    {{ ([80] if vpn_panel_nginx_enabled | bool else [])
+       + ([443] if vpn_panel_nginx_enabled | bool and (vpn_panel_tls_mode != 'none' or healthcheck_vless | bool) else [])
+       + ([vpn_panel_xray_port | int] if healthcheck_vless | bool else []) }}
+  tables: >-
+    {{ {'corpvpn_nat': 'corpvpn-nat.service', 'corpvpn_guard': 'corpvpn-nat.service'}
+       | combine({'corpvpn_policy': 'corpvpn-policy.service'} if vpn_panel_network_policy_mode == 'enforce' else {})
+       | combine({'corpvpn_xray': 'corpvpn-nat.service'}
+                 if healthcheck_vless | bool and vpn_panel_xray_egress_guard | default(true) | bool else {}) }}
+  reality: >-
+    {{ {'tool': '/usr/local/sbin/corpvpn-xray', 'config': vpn_panel_xray_base_config_path,
+        'env': vpn_panel_app_dir ~ '/.env', 'tag': vpn_panel_xray_client_inbound_tag}
+       if healthcheck_vless | bool else None }}
+  awg: >-
+    {{ {'tool': '/usr/local/sbin/awg-peer-sync', 'obfuscation': '/etc/amnezia/amneziawg/obfuscation.json'}
+       if healthcheck_awg | bool else None }}
+  certificate: "{{ vpn_panel_ssl_cert_path if vpn_panel_tls_mode != 'none' else '' }}"
+  certificate_min_days: "{{ vpn_panel_healthcheck_certificate_min_days | int }}"
+  backup_state: "{{ vpn_panel_state_dir ~ '/backup.json' if vpn_panel_backup_enabled | bool else '' }}"
+  backup_max_age_hours: "{{ vpn_panel_healthcheck_backup_max_age_hours | int }}"
+  alert_command: "{{ vpn_panel_healthcheck_alert_command }}"
+  textfile_dir: "{{ vpn_panel_node_exporter_textfile_dir }}"

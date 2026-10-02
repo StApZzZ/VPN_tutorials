@@ -1,0 +1,134 @@
+---
+# Build amneziawg-go and amneziawg-tools at the commits pinned in
+# deploy/versions.yml, with a checksum-verified private Go toolchain. Runs only
+# when the pins changed since the last build (or a binary is missing).
+- name: AmneziaWG | Build directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ awg_server_cache_dir }}"
+    - "{{ awg_server_build_dir }}"
+    - "{{ awg_server_go_root }}"
+
+- name: "AmneziaWG | Download verified Go: {{ corpvpn_go_version }}"
+  ansible.builtin.get_url:
+    url: "{{ corpvpn_go_url }}/go{{ corpvpn_go_version }}.linux-{{ awg_server_go_arch }}.tar.gz"
+    dest: "{{ awg_server_cache_dir }}/go{{ corpvpn_go_version }}.linux-{{ awg_server_go_arch }}.tar.gz"
+    checksum: "sha256:{{ corpvpn_go_sha256[awg_server_go_arch] }}"
+    owner: root
+    group: root
+    mode: "0644"
+  environment: "{{ vpn_panel_proxy_env }}"
+
+- name: AmneziaWG | Unpack Go
+  ansible.builtin.unarchive:
+    src: "{{ awg_server_cache_dir }}/go{{ corpvpn_go_version }}.linux-{{ awg_server_go_arch }}.tar.gz"
+    dest: "{{ awg_server_go_root }}"
+    remote_src: true
+    creates: "{{ awg_server_go_root }}/go/bin/go"
+
+- name: AmneziaWG | Go toolchain version
+  ansible.builtin.command: "{{ awg_server_go_root }}/go/bin/go version"
+  register: awg_server_go_version_out
+  changed_when: false
+  failed_when: ('go' ~ corpvpn_go_version ~ ' ') not in awg_server_go_version_out.stdout
+
+- name: AmneziaWG | Fetch amneziawg-go {{ corpvpn_amneziawg_go_version }}
+  ansible.builtin.git:
+    repo: "{{ corpvpn_amneziawg_go_repo }}"
+    dest: "{{ awg_server_build_dir }}/amneziawg-go-{{ corpvpn_amneziawg_go_version }}"
+    version: "{{ corpvpn_amneziawg_go_version }}"
+    depth: 1
+    force: true
+  register: awg_server_go_src
+  environment: "{{ vpn_panel_proxy_env }}"
+
+- name: AmneziaWG | amneziawg-go is the pinned commit
+  ansible.builtin.assert:
+    that: awg_server_go_src.after == corpvpn_amneziawg_go_commit
+    fail_msg: >-
+      Tag {{ corpvpn_amneziawg_go_version }} of {{ corpvpn_amneziawg_go_repo }} points to
+      {{ awg_server_go_src.after }}, not to the pinned {{ corpvpn_amneziawg_go_commit }}. Refusing to build.
+    quiet: true
+
+- name: AmneziaWG | Go version amneziawg-go requires
+  ansible.builtin.command: awk '$1 == "go" {print $2; exit}' go.mod
+  args:
+    chdir: "{{ awg_server_build_dir }}/amneziawg-go-{{ corpvpn_amneziawg_go_version }}"
+  register: awg_server_go_mod
+  changed_when: false
+
+- name: AmneziaWG | The pinned Go is new enough
+  ansible.builtin.assert:
+    that: corpvpn_go_version is version(awg_server_go_mod.stdout | trim, '>=')
+    fail_msg: >-
+      amneziawg-go {{ corpvpn_amneziawg_go_version }} needs Go {{ awg_server_go_mod.stdout | trim }},
+      deploy/versions.yml pins Go {{ corpvpn_go_version }}: bump corpvpn_go_version and its sha256.
+    quiet: true
+
+# GOTOOLCHAIN=local: Go never downloads another toolchain behind the pin;
+# -mod=readonly: go.sum must cover every module.
+- name: AmneziaWG | Build amneziawg-go
+  ansible.builtin.command:
+    cmd: "{{ awg_server_go_root }}/go/bin/go build -trimpath -o {{ awg_server_build_dir }}/amneziawg-go.bin ."
+    chdir: "{{ awg_server_build_dir }}/amneziawg-go-{{ corpvpn_amneziawg_go_version }}"
+  environment: >-
+    {{ vpn_panel_proxy_env | combine({
+         'GOTOOLCHAIN': 'local', 'GOFLAGS': '-mod=readonly -buildvcs=false', 'GOPROXY': awg_server_goproxy,
+         'GOPATH': awg_server_cache_dir ~ '/gopath', 'GOCACHE': awg_server_cache_dir ~ '/gocache',
+         'HOME': awg_server_cache_dir, 'PATH': awg_server_go_root ~ '/go/bin:' ~ ansible_env.PATH}) }}
+  changed_when: true
+
+# copy writes a new file and renames it: a running awg0 keeps the old binary.
+- name: AmneziaWG | Install amneziawg-go
+  ansible.builtin.copy:
+    src: "{{ awg_server_build_dir }}/amneziawg-go.bin"
+    dest: /usr/local/bin/amneziawg-go
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: AmneziaWG | Fetch amneziawg-tools {{ corpvpn_amneziawg_tools_version }}
+  ansible.builtin.git:
+    repo: "{{ corpvpn_amneziawg_tools_repo }}"
+    dest: "{{ awg_server_build_dir }}/amneziawg-tools-{{ corpvpn_amneziawg_tools_version }}"
+    version: "{{ corpvpn_amneziawg_tools_version }}"
+    depth: 1
+    force: true
+  register: awg_server_tools_src
+  environment: "{{ vpn_panel_proxy_env }}"
+
+- name: AmneziaWG | amneziawg-tools is the pinned commit
+  ansible.builtin.assert:
+    that: awg_server_tools_src.after == corpvpn_amneziawg_tools_commit
+    fail_msg: >-
+      Tag {{ corpvpn_amneziawg_tools_version }} of {{ corpvpn_amneziawg_tools_repo }} points to
+      {{ awg_server_tools_src.after }}, not to the pinned {{ corpvpn_amneziawg_tools_commit }}. Refusing to build.
+    quiet: true
+
+- name: AmneziaWG | Build and install awg / awg-quick
+  ansible.builtin.command:
+    cmd: make install
+    chdir: "{{ awg_server_build_dir }}/amneziawg-tools-{{ corpvpn_amneziawg_tools_version }}/src"
+  changed_when: true
+
+- name: AmneziaWG | Record the build
+  ansible.builtin.copy:
+    dest: "{{ awg_server_build_stamp }}"
+    content: "{{ awg_server_build_id }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: "AmneziaWG | Keep the previous binary while running: {{ awg_server_iface }}"
+  ansible.builtin.debug:
+    msg: >-
+      AmneziaWG was rebuilt ({{ awg_server_build_id }}). The running {{ awg_server_iface }} keeps the
+      previous amneziawg-go until `systemctl restart awg-quick@{{ awg_server_iface }}`, which drops the
+      AmneziaWG sessions: plan it.
+  when: awg_server_iface_present.rc == 0

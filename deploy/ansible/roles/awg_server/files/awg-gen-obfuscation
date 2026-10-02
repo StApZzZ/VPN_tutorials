@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Write random AmneziaWG obfuscation parameters to the given JSON file.
+
+Constraints (amneziawg-go): Jmin < Jmax <= 1280; S1, S2 <= 1132 and
+S1 + 56 != S2; H1..H4 distinct and > 4. Values stay modest so handshakes fit a
+1280-byte path. Run once per server; the result must never change afterwards.
+"""
+import json
+import os
+import secrets
+import sys
+
+
+def pick(low: int, high: int) -> int:
+    return low + secrets.randbelow(high - low + 1)
+
+
+def generate() -> dict:
+    jmin = pick(40, 90)
+    s1 = pick(15, 150)
+    s2 = pick(15, 150)
+    while s1 + 56 == s2:
+        s2 = pick(15, 150)
+    headers: set[int] = set()
+    while len(headers) < 4:
+        headers.add(pick(5, 2_147_483_647))
+    h1, h2, h3, h4 = sorted(headers)
+    return {
+        "Jc": pick(3, 8),
+        "Jmin": jmin,
+        "Jmax": pick(jmin + 50, 1000),
+        "S1": s1,
+        "S2": s2,
+        "H1": h1,
+        "H2": h2,
+        "H3": h3,
+        "H4": h4,
+    }
+
+
+def main() -> int:
+    path = sys.argv[1]
+    if os.path.exists(path):
+        print(f"{path} exists; not overwriting", file=sys.stderr)
+        return 0
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        json.dump(generate(), handle, indent=2)
+        handle.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

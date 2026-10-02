@@ -1,0 +1,65 @@
+---
+- name: Restore a CorpVPN gateway before re-running its deployment
+  hosts: management:ungrouped
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Require a controller archive path
+      ansible.builtin.assert:
+        that: corpvpn_restore_archive | default('') | length > 0
+        fail_msg: Set corpvpn_restore_archive to a decrypted tar.gz on the controller.
+    - name: Installed service and timer units
+      ansible.builtin.command:
+        argv: [systemctl, list-unit-files, --type=service, --type=timer, --no-legend, --no-pager]
+      register: corpvpn_installed_units
+      changed_when: false
+    - name: Protected restore directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: corpvpn-restore-
+      register: restore_tmp
+    - name: Validate and apply
+      block:
+        - name: Upload archive and validator
+          ansible.builtin.copy:
+            src: "{{ item.src }}"
+            dest: "{{ restore_tmp.path }}/{{ item.dest }}"
+            mode: "0600"
+          loop:
+            - src: "{{ corpvpn_restore_archive }}"
+              dest: backup.tar.gz
+            - src: roles/backup/files/corpvpn-restore
+              dest: restore.py
+          no_log: true
+        - name: Verify manifest before stopping services
+          ansible.builtin.command:
+            argv: [python3, "{{ restore_tmp.path }}/restore.py", --archive, "{{ restore_tmp.path }}/backup.tar.gz"]
+          changed_when: false
+        - name: Stop gateway writers and tunnels
+          ansible.builtin.systemd:
+            name: "{{ item }}"
+            state: stopped
+          loop:
+            - corpvpn-backup.timer
+            - corpvpn-healthcheck.timer
+            - vpn-panel-directory-sync.timer
+            - corpvpn-backup.service
+            - corpvpn-healthcheck.service
+            - vpn-panel-directory-sync.service
+            - vpn-panel.service
+            - xray.service
+            - awg-quick@awg0.service
+            - wg-quick@wg0.service
+          when: item in corpvpn_installed_units.stdout.split()
+        - name: Restore verified content
+          ansible.builtin.command:
+            argv: [python3, "{{ restore_tmp.path }}/restore.py", --archive, "{{ restore_tmp.path }}/backup.tar.gz", --apply]
+          changed_when: true
+        - name: Resume procedure
+          ansible.builtin.debug:
+            msg: Re-run deploy/run.sh with the original settings. It checks and reuses the restored keys before starting services.
+      always:
+        - name: Remove protected scratch files
+          ansible.builtin.file:
+            path: "{{ restore_tmp.path }}"
+            state: absent

@@ -1,0 +1,6 @@
+---
+# Tunnels this gateway serves, with their UDP ports.
+smoke_tunnels: >-
+  {{ [{'iface': vpn_panel_wg_interface, 'port': vpn_panel_wg_port}]
+     + ([{'iface': vpn_panel_awg_interface, 'port': vpn_panel_awg_port}]
+        if 'awg' in vpn_panel_enabled_protocols else []) }}

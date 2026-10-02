@@ -1,0 +1,40 @@
+---
+# Xray (VLESS / REALITY) on the gateway: the release pinned in deploy/versions.yml,
+# a dedicated service account, CorpVPN's own hardened unit, and a config whose
+# REALITY key pair is generated on the host and never leaves it. After the first
+# start the panel owns the clients and the routing; re-runs only update the parts
+# listed in the seed template (listen address, REALITY server name, outbounds).
+
+xray_user: xray
+xray_release_dir: /usr/local/lib/corpvpn/xray-{{ corpvpn_xray_version }}
+xray_asset_dir: /usr/local/share/xray
+xray_cache_dir: /var/cache/corpvpn
+xray_seed_path: "{{ vpn_panel_xray_config_dir }}/corpvpn-seed.json"
+xray_new_config_path: "{{ vpn_panel_xray_base_config_path }}.new"
+
+# Test the REALITY server name end to end (a throwaway server and client on
+# loopback) before a new key or server name goes live.
+vpn_panel_xray_selftest: true
+# Seed for a first install only (e.g. moving a gateway without a backup): the
+# REALITY private key and short ID to start with. Put them in
+# group_vars/all.secrets.yml. A host that already has a key keeps it; a different
+# value here stops the run.
+vpn_panel_xray_reality_private_key: ""
+vpn_panel_xray_reality_short_id: ""
+# true: replace the key pair and short ID. Every issued VLESS link stops working.
+vpn_panel_xray_reality_rotate: false
+
+# Resolve destinations to IPv4 in the direct outbound (the tunnels carry IPv4).
+vpn_panel_xray_direct_domain_strategy: UseIPv4
+# Extra outbounds (raw Xray outbound objects, each with a unique tag), e.g. a
+# regional internet breakout that domain rules or the default route send
+# traffic to via vpn_panel_xray_egress_outbound_tag(s).
+vpn_panel_xray_egress_outbounds: []
+
+# Refuse Xray's own new connections to loopback (DNS excepted), link-local and
+# the always-denied ranges: VLESS users must not reach the gateway's local
+# services (the panel, Xray's stats) or the cloud metadata service.
+vpn_panel_xray_egress_guard: true
+xray_guard_deny_v4: >-
+  {{ ['127.0.0.0/8', '169.254.0.0/16', '100.100.100.200/32']
+     + (vpn_panel_forward_deny_cidrs | reject('search', ':') | list) }}

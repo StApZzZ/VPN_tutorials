@@ -1,0 +1,31 @@
+---
+# Docker sets the iptables FORWARD policy to DROP when it enabled forwarding
+# itself, which also drops CorpVPN traffic. Accept it in DOCKER-USER for the given
+# (in, out) interface pairs only, so containers stay unreachable from the tunnels.
+# Used by the gateway and the site connector.
+#
+# Input: corpvpn_docker_user_pairs, a list of [in_iface, out_iface].
+- name: Docker | Integration script
+  ansible.builtin.template:
+    src: corpvpn-docker-user.sh.j2
+    dest: /usr/local/sbin/corpvpn-docker-user
+    owner: root
+    group: root
+    mode: "0755"
+  register: corpvpn_docker_user_script
+
+- name: Docker | Integration unit
+  ansible.builtin.template:
+    src: corpvpn-docker-user.service.j2
+    dest: /etc/systemd/system/corpvpn-docker-user.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: corpvpn_docker_user_unit
+
+- name: Docker | Enable and run the integration
+  ansible.builtin.systemd:
+    name: corpvpn-docker-user.service
+    enabled: true
+    state: "{{ 'restarted' if (corpvpn_docker_user_script is changed or corpvpn_docker_user_unit is changed) else 'started' }}"
+    daemon_reload: "{{ corpvpn_docker_user_unit is changed }}"

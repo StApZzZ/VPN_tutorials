@@ -1,0 +1,4 @@
+---
+- name: Backup | reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true

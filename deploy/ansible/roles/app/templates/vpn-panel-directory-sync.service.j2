@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+[Unit]
+Description=CorpVPN directory sync (LDAP offboarding, OIDC attestation)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{ vpn_panel_app_dir }}
+EnvironmentFile={{ vpn_panel_app_dir }}/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart={{ vpn_panel_venv_dir }}/bin/python directory_sync.py
+User=root
+Group=root
+
+{% include 'sandbox.conf.j2' %}

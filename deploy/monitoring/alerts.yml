@@ -1,0 +1,28 @@
+groups:
+  - name: corpvpn
+    rules:
+      - alert: CorpVPNUnavailable
+        expr: up{job="corpvpn"} == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations: {summary: "CorpVPN metrics endpoint is unavailable"}
+      - alert: CorpVPNPolicyFailure
+        expr: corpvpn_network_policy_error > 0 or corpvpn_network_policy_enforced == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "CorpVPN network policy needs attention"}
+      - alert: CorpVPNBackupStale
+        expr: time() - corpvpn_backup_last_success_timestamp_seconds > 93600
+        for: 15m
+        labels: {severity: warning}
+        annotations: {summary: "CorpVPN backup is older than 26 hours"}
+      - alert: CorpVPNHealthcheckFailed
+        expr: corpvpn_healthcheck_failed_checks > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "A CorpVPN service health check failed"}
+      - alert: CorpVPNPoolNearlyFull
+        expr: corpvpn_ip_pool_free / corpvpn_ip_pool_size < 0.1
+        for: 15m
+        labels: {severity: warning}
+        annotations: {summary: "CorpVPN address pool has less than 10 percent free"}

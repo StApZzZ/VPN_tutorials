@@ -1,0 +1,13 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+# Loaded by corpvpn-policy.service when the panel has not written a policy yet,
+# or when that policy cannot be loaded: VPN clients reach nothing until the panel
+# loads the access profiles into this same table.
+table inet corpvpn_policy
+delete table inet corpvpn_policy
+table inet corpvpn_policy {
+    chain forward {
+        type filter hook forward priority filter - 5; policy accept;
+        iifname { {{ vpn_panel_tunnel_ifaces | map('to_json') | join(', ') }} } counter drop
+    }
+}

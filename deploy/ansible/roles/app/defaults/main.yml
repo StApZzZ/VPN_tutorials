@@ -1,0 +1,171 @@
+---
+# Role defaults — LOWEST priority: group_vars, quickstart's generated vars and the
+# operator's overrides always win. Settings shared with other roles (paths, pools,
+# protocols, Xray client settings) live in the preflight role.
+
+# --- Service toggle -----------------------------------------------------------
+# false renders the files but keeps vpn-panel.service stopped (maintenance).
+vpn_panel_panel_enabled: true
+
+# --- Public URLs ----------------------------------------------------------------
+# HTTPS origin of the panel, used for absolute one-shot config links and the
+# OIDC redirect (e.g. https://vpn.example.com). Empty => links are relative.
+vpn_panel_public_url: ""
+vpn_panel_config_link_ttl_days: 7
+
+# --- Metrics --------------------------------------------------------------------
+# Per-peer traffic and endpoint-change series are personal data; off by default.
+vpn_panel_metrics_peer_detail: false
+
+# --- AmneziaWG ------------------------------------------------------------------
+# Public key of the awg0 interface. Empty => taken from the awg_server role (the
+# live key on the host); without awg, AWG configs fall back to a plain-WG alias.
+vpn_panel_awg_server_public_key: ""
+# Seeds awg.db on first install (awg_settings.py --seed-from-json); afterwards
+# the live values are edited in the panel. The obfuscation parameters always
+# come from the running awg0 (awg_server role facts).
+vpn_panel_awg_settings:
+  endpoint_host: "{{ vpn_panel_wg_endpoint_host }}"
+  endpoint_port: "{{ vpn_panel_awg_port }}"
+  dns_servers: "{{ vpn_panel_dns_servers | join(',') }}"
+  persistent_keepalive: 25
+  Jc: "{{ (awg_server_obfuscation_effective | default({})).Jc | default(0) }}"
+  Jmin: "{{ (awg_server_obfuscation_effective | default({})).Jmin | default(0) }}"
+  Jmax: "{{ (awg_server_obfuscation_effective | default({})).Jmax | default(0) }}"
+  S1: "{{ (awg_server_obfuscation_effective | default({})).S1 | default(0) }}"
+  S2: "{{ (awg_server_obfuscation_effective | default({})).S2 | default(0) }}"
+  S3: 0
+  S4: 0
+  H1: "{{ (awg_server_obfuscation_effective | default({})).H1 | default(0) }}"
+  H2: "{{ (awg_server_obfuscation_effective | default({})).H2 | default(0) }}"
+  H3: "{{ (awg_server_obfuscation_effective | default({})).H3 | default(0) }}"
+  H4: "{{ (awg_server_obfuscation_effective | default({})).H4 | default(0) }}"
+  I1: ""
+  I2: ""
+  I3: ""
+  I4: ""
+  I5: ""
+
+vpn_panel_routing_overrides_path: "{{ vpn_panel_config_dir }}/routing_overrides.json"
+
+# --- Xray commands (empty => the panel cannot apply; doctor reports it) ---------
+vpn_panel_xray_validate_command: >-
+  {{ vpn_panel_xray_bin_path ~ ' run -test -config {config_path}'
+     if 'vless' in vpn_panel_enabled_protocols else '' }}
+vpn_panel_xray_reload_command: >-
+  {{ '/bin/systemctl restart xray' if 'vless' in vpn_panel_enabled_protocols else '' }}
+vpn_panel_xray_push_command: ""
+# Path on the deploy machine of an SSH key the panel uses to push Xray config to a
+# separate edge. Empty => single host, no key is shipped.
+vpn_panel_xray_remote_ssh_key_src: ""
+vpn_panel_xray_remote_ssh_key_dest: "{{ vpn_panel_config_dir }}/xray_push_key"
+vpn_panel_xray_direct_ip_rules: []
+
+# --- Xray routing targets -------------------------------------------------------
+# Domain rules route VLESS traffic "direct" (the gateway's own routing: corporate
+# ranges via the site connector, the rest to the internet), "egress" (the
+# outbound or balancer below) or "block". Egress "direct" = no separate exit.
+vpn_panel_xray_egress_outbound_tag: "direct"
+vpn_panel_xray_egress_balancer_tag: ""
+vpn_panel_xray_egress_outbound_tags: []
+# Traffic that matches no rule: "direct" or "egress".
+vpn_panel_xray_default_route: "egress"
+vpn_panel_xray_egress_probe_url: "https://cp.cloudflare.com/generate_204"
+vpn_panel_xray_egress_probe_interval: "30s"
+
+# --- Xray client links ----------------------------------------------------------
+vpn_panel_xray_client_server: "{{ vpn_panel_server_name if vpn_panel_server_name != '_' else vpn_panel_public_host }}"
+vpn_panel_xray_client_fingerprint: "chrome"
+vpn_panel_xray_client_flow: ""
+
+# --- Live VLESS stats -----------------------------------------------------------
+vpn_panel_xray_stats_enabled: false
+vpn_panel_xray_stats_metrics_listen: ""
+vpn_panel_xray_stats_url: ""
+
+# --- Corporate identity -----------------------------------------------------------
+vpn_panel_session_ttl_hours: 12
+vpn_panel_session_idle_minutes: 120
+# Break-glass admin: PANEL_USERNAME + panel_secret_token on the form, token as
+# Bearer/Basic for automation; optionally only from these networks.
+vpn_panel_auth_local_enabled: true
+vpn_panel_auth_api_token_enabled: true
+vpn_panel_auth_local_allowed_cidrs: []
+# Role for a directory user matching no policy: "" = deny.
+vpn_panel_auth_default_role: ""
+# Seed group policies on first start (edited in the panel afterwards).
+vpn_panel_auth_admin_groups: []
+vpn_panel_auth_operator_groups: []
+vpn_panel_auth_user_groups: []
+vpn_panel_auth_max_failures: 10
+vpn_panel_auth_failure_window_seconds: 900
+vpn_panel_auth_attestation_days: 30
+# directory_sync timer (LDAP offboarding + OIDC attestation)
+vpn_panel_directory_sync_interval: 15min
+
+# OIDC (Keycloak / ADFS / Entra ID). Secret goes in all.secrets.yml.
+vpn_panel_oidc_enabled: false
+vpn_panel_oidc_discovery_url: ""
+vpn_panel_oidc_client_id: ""
+vpn_panel_oidc_client_secret: ""
+vpn_panel_oidc_token_auth_method: client_secret_basic
+vpn_panel_oidc_scopes: "openid profile email"
+vpn_panel_oidc_redirect_url: ""
+vpn_panel_oidc_username_claims: "preferred_username,upn,email,sub"
+vpn_panel_oidc_groups_claims: "groups,group,roles"
+vpn_panel_oidc_button_label: "Sign in with corporate SSO"
+vpn_panel_oidc_logout_at_idp: true
+
+# LDAP / Active Directory (OpenLDAP / FreeIPA: set the filters below). Bind
+# password goes in all.secrets.yml.
+vpn_panel_ldap_enabled: false
+vpn_panel_ldap_url: ""
+vpn_panel_ldap_start_tls: false
+# Local path (on the deploy machine) of the directory's CA certificate; copied to
+# vpn_panel_ldap_ca_dest. Empty = system trust store.
+vpn_panel_ldap_ca_src: ""
+vpn_panel_ldap_ca_dest: "{{ vpn_panel_config_dir }}/ldap-ca.pem"
+vpn_panel_ldap_bind_dn: ""
+vpn_panel_ldap_bind_password: ""
+vpn_panel_ldap_user_base_dn: ""
+vpn_panel_ldap_user_filter: "(&(objectClass=user)(sAMAccountName={username}))"
+vpn_panel_ldap_username_attr: sAMAccountName
+vpn_panel_ldap_email_attr: mail
+vpn_panel_ldap_display_name_attr: displayName
+vpn_panel_ldap_group_attr: memberOf
+vpn_panel_ldap_group_base_dn: ""
+vpn_panel_ldap_group_search_filter: "(member:1.2.840.113556.1.4.1941:={user_dn})"
+
+# --- Audit ---------------------------------------------------------------------
+# Ship audit events to syslog as JSON lines: "/dev/log" or "siem.example.com:514" (UDP).
+vpn_panel_audit_syslog_address: ""
+
+vpn_panel_api_docs_enabled: ""
+vpn_panel_network_policy_client_isolation: "{{ not (vpn_panel_client_to_client | bool) }}"
+vpn_panel_nft_command: nft
+vpn_panel_ldap_tls_strict: "true"
+vpn_panel_local_accounts_enabled: "true"
+vpn_panel_backup_change_keep: "20"
+vpn_panel_xray_command_timeout_seconds: "60"
+vpn_panel_network_policy_deny_cidrs: "{{ vpn_panel_forward_deny_cidrs | join(',') }}"
+vpn_panel_xray_stats_timeout: "3"
+vpn_panel_xray_stats_online_window_seconds: "120"
+vpn_panel_config_link_cleanup_interval_seconds: "300"
+vpn_panel_auth_max_failures_per_ip: "30"
+vpn_panel_auth_attestation_warn_days: "7"
+vpn_panel_oidc_http_timeout: "10"
+vpn_panel_ldap_timeout: "10"
+vpn_panel_audit_retention_days: "365"
+vpn_panel_site_link_network: 10.99.0.0/30
+vpn_panel_ldap_disabled_filter: ""
+vpn_panel_auth_local_totp: admins
+vpn_panel_panel_data_key: ""
+vpn_panel_awg_server_ip: ""
+vpn_panel_directory_sync_max_disable: 10%
+vpn_panel_local_data_key_path: ""
+vpn_panel_config_link_public_base_url: ""
+vpn_panel_auth_mfa_required_roles: admin,operator
+vpn_panel_oidc_required_acr: ""
+vpn_panel_oidc_required_amr: ""
+
+vpn_panel_oidc_allow_insecure_http: false

@@ -1,0 +1,30 @@
+---
+# Host preparation for the access-profile policy on the gateway: forwarding, the
+# boot-time policy loader, firewall detection and the Docker integration. The
+# policy itself (table inet corpvpn_policy) is rendered and loaded by the panel;
+# the shared settings (mode, corporate ranges) live in the preflight role.
+
+# Tunnel interfaces whose forwarded traffic the policy judges.
+vpn_panel_tunnel_ifaces: >-
+  {{ [vpn_panel_wg_interface]
+     + ([vpn_panel_awg_interface] if 'awg' in vpn_panel_enabled_protocols else []) }}
+
+# Written when the panel has no policy file yet (or it cannot be loaded): VPN
+# clients reach nothing until the panel loads the access profiles.
+vpn_panel_nft_policy_placeholder: /usr/local/share/corpvpn/policy-deny-all.nft
+
+# What to do when ufw or firewalld is active on the host:
+#   fail   - stop and print the rules to add (default)
+#   warn   - print the rules and continue
+#   manage - add the rules automatically (ufw only)
+vpn_panel_firewall_conflict_action: fail
+
+# Docker sets the iptables FORWARD policy to DROP. true: let tunnel traffic
+# through DOCKER-USER towards the uplink (and the site link) only, so containers
+# stay unreachable from VPN clients.
+vpn_panel_docker_user_integration: true
+# Interfaces VPN clients may leave through when Docker is present. Default: the
+# default-route interface and the site link; add an office LAN interface here in
+# single mode when the gateway reaches it directly.
+vpn_panel_client_egress_ifaces: >-
+  {{ [ansible_default_ipv4.interface | default('eth0'), vpn_panel_site_link_iface] }}

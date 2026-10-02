@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+[Unit]
+Description=CorpVPN backup (keys, configs, panel databases)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/corpvpn-backup --config {{ vpn_panel_config_dir }}/backup.json
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=true

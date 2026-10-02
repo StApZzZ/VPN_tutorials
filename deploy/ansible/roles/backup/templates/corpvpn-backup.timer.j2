@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Daily CorpVPN backup
+
+[Timer]
+OnCalendar=*-*-* {{ vpn_panel_backup_time }}:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,163 @@
+---
+# Settings shared by the CorpVPN roles. Role defaults have the LOWEST precedence:
+# inventory and group_vars, quickstart's generated group_vars/all.yml and the
+# operator's group_vars/overrides.yml (both passed by run.sh as extra vars, the
+# overrides file last) all win over anything here.
+
+# --- Repository and host paths ------------------------------------------------
+vpn_panel_local_project_root: "{{ playbook_dir }}/../.."
+vpn_panel_source_dir: "{{ vpn_panel_local_project_root }}/panel"
+vpn_panel_app_dir: /opt/vpn-panel
+vpn_panel_config_dir: /etc/vpn-panel
+vpn_panel_backup_dir: /var/backups/vpn-panel
+vpn_panel_venv_dir: "{{ vpn_panel_app_dir }}/.venv"
+# State the deploy keeps next to the panel (build stamps, health state).
+vpn_panel_state_dir: /var/lib/corpvpn
+
+# --- Panel ------------------------------------------------------------------------
+# Loopback only: nginx on the same host is the public entry point. The panel API
+# must never be reachable directly from the internet.
+vpn_panel_panel_host: 127.0.0.1
+vpn_panel_panel_port: 8080
+vpn_panel_panel_username: admin
+# Break-glass token; set in group_vars/all.secrets.yml (quickstart writes it).
+panel_secret_token: ""
+
+# --- Public names -----------------------------------------------------------------
+# What employees' clients dial: a DNS name (preferred) or the gateway address.
+vpn_panel_server_name: _
+vpn_panel_public_host: "{{ ansible_host | default(inventory_hostname) }}"
+vpn_panel_fallback_host: "{{ vpn_panel_public_host }}"
+vpn_panel_wg_endpoint_host: "{{ vpn_panel_server_name if vpn_panel_server_name != '_' else vpn_panel_public_host }}"
+
+# --- Protocols --------------------------------------------------------------------
+# What this gateway serves (quickstart PROTOCOLS). wg0 is always installed: awg0
+# mirrors its peers.
+vpn_panel_enabled_protocols: [wg, awg, vless]
+
+# --- Client address pools -----------------------------------------------------------
+# Any IPv4 network from /16 to /29. awg0 mirrors wg0 by host offset, so both
+# pools have the same size. A pool cannot change once wg0.conf exists.
+vpn_panel_wg_interface: wg0
+vpn_panel_wg_port: 51820
+vpn_panel_wg_network: 10.66.0.0/22
+vpn_panel_wg_server_ip: "{{ vpn_panel_wg_network | corpvpn_host(1) }}"
+vpn_panel_wg_config_path: /etc/wireguard/wg0.conf
+vpn_panel_wg_public_key_path: /etc/wireguard/wg0_public.key
+vpn_panel_wg_clients_table: /etc/wireguard/clientsTable
+vpn_panel_client_private_keys_path: /etc/wireguard/clientsPrivateKeys.json
+
+vpn_panel_awg_interface: awg0
+vpn_panel_awg_port: 51821
+vpn_panel_awg_network: 10.66.4.0/22
+
+# Resolvers handed to WG/AWG clients (normally the internal DNS).
+vpn_panel_dns_servers:
+  - 1.1.1.1
+  - 1.0.0.1
+
+# --- Network policy -------------------------------------------------------------------
+# off     - the panel loads nothing into the kernel (client configs still follow
+#           the profiles)
+# enforce - the panel loads table inet corpvpn_policy after every change; at boot
+#           corpvpn-policy.service loads the last policy (or a deny-all
+#           placeholder) before the tunnels come up
+vpn_panel_network_policy_mode: enforce
+# Every corporate range. A destination here that the device's profile does not
+# allow is dropped even on a full tunnel. In split mode these are also the ranges
+# routed to the site connector.
+vpn_panel_corp_cidrs: []
+vpn_panel_nft_policy_dir: /etc/nftables.d
+vpn_panel_nft_policy_path: "{{ vpn_panel_nft_policy_dir }}/50-corpvpn-policy.nft"
+vpn_panel_network_policy_refresh_seconds: 60
+# VPN clients may reach each other's devices (wg0/awg0 to wg0/awg0). Off: every
+# device only talks to the networks its profile allows.
+vpn_panel_client_to_client: false
+# Always dropped for VPN clients, whatever the profile says: link-local (cloud
+# metadata services) plus these ranges (e.g. the gateway's own cloud network).
+vpn_panel_forward_deny_cidrs: []
+
+# --- Split mode (site connector) ----------------------------------------------------------
+vpn_panel_split_mode: "{{ (groups['site_connector'] | default([])) | length > 0 }}"
+vpn_panel_site_link_iface: wg-site
+vpn_panel_site_link_port: 51830
+# Gateway = first host, connector = second host.
+vpn_panel_site_link_network: 10.99.0.0/30
+
+# --- TCP 443 ---------------------------------------------------------------------------
+# With vless enabled nginx owns TCP 443 as a TLS-SNI router (stream module): the
+# REALITY server name goes to Xray, everything else to the panel's TLS server.
+# Both backends listen on loopback and receive the client address via PROXY
+# protocol.
+vpn_panel_xray_listen: 127.0.0.1
+vpn_panel_xray_port: 8443
+vpn_panel_nginx_panel_tls_port: 8444
+# Reverse proxies / load balancers in front of the panel whose X-Forwarded-For
+# and X-Forwarded-Proto are trusted (TLS_MODE=none, or TLS without vless).
+vpn_panel_trusted_proxy_cidrs: []
+
+# --- Xray (VLESS / REALITY) ------------------------------------------------------------
+vpn_panel_xray_bin_path: /usr/local/bin/xray
+vpn_panel_xray_config_dir: /etc/xray
+vpn_panel_xray_base_config_path: "{{ vpn_panel_xray_config_dir }}/config.json"
+vpn_panel_xray_routing_export_path: "{{ vpn_panel_xray_config_dir }}/routing.generated.json"
+vpn_panel_xray_merged_config_export_path: "{{ vpn_panel_xray_config_dir }}/config.generated.json"
+vpn_panel_xray_action_state_path: "{{ vpn_panel_config_dir }}/xray_action_state.json"
+vpn_panel_xray_apply_backup_dir: "{{ vpn_panel_backup_dir }}/xray"
+vpn_panel_xray_clients_path: "{{ vpn_panel_config_dir }}/xray_clients.json"
+vpn_panel_xray_client_inbound_tag: vless-in
+# The REALITY server name: clients send it as SNI, Xray borrows its TLS handshake
+# (dest) and nginx routes it to Xray. It must be a real site that serves TLS 1.3
+# with a short certificate chain; the xray role tests it before going live.
+vpn_panel_xray_client_reality_server_name: www.cloudflare.com
+vpn_panel_xray_reality_dest: "{{ vpn_panel_xray_client_reality_server_name }}:443"
+# Public port in client links (nginx shares TCP 443).
+vpn_panel_xray_client_port: 443
+vpn_panel_xray_client_network: tcp
+vpn_panel_xray_client_security: reality
+vpn_panel_xray_client_local_socks_port: 10808
+vpn_panel_xray_client_local_http_port: 10809
+
+# --- Operations -------------------------------------------------------------------------
+vpn_panel_backup_enabled: true
+vpn_panel_healthcheck_enabled: true
+# node_exporter's textfile directory: the backup and the health check write their
+# metrics there when it exists (deploy/monitoring).
+vpn_panel_node_exporter_textfile_dir: /var/lib/prometheus/node-exporter
+
+# --- Outbound proxy for downloads (apt, pip, Go modules, release archives) --------------
+vpn_panel_http_proxy: ""
+vpn_panel_https_proxy: ""
+vpn_panel_no_proxy: ""
+vpn_panel_proxy_env: >-
+  {{ {} if not (vpn_panel_http_proxy or vpn_panel_https_proxy) else
+     {'http_proxy': vpn_panel_http_proxy, 'HTTP_PROXY': vpn_panel_http_proxy,
+      'https_proxy': vpn_panel_https_proxy, 'HTTPS_PROXY': vpn_panel_https_proxy,
+      'no_proxy': vpn_panel_no_proxy, 'NO_PROXY': vpn_panel_no_proxy} }}
+
+vpn_panel_app_source_files:
+  - awg_settings.py
+  - client_artifacts.py
+  - config.py
+  - config_links.py
+  - db.py
+  - devices.py
+  - devices_routes.py
+  - directory_sync.py
+  - main.py
+  - i18n.py
+  - models.py
+  - network_policy.py
+  - peer_artifacts.py
+  - protocol_stats.py
+  - reality_keycheck.py
+  - requirements.txt
+  - routing_overrides.py
+  - vpn_manager.py
+  - xray_clients.py
+  - xray_manager.py
+vpn_panel_app_source_dirs:
+  - auth
+  - static
+  - templates
+vpn_panel_awg_obfs: "{{ awg_server_obfuscation_effective | default({}) }}"

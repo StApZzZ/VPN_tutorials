@@ -1,0 +1,12 @@
+---
+# A broken configuration stops here, before the running nginx is touched.
+- name: Nginx | check the configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+  listen: Nginx | reload
+
+- name: Nginx | reload nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+  listen: Nginx | reload

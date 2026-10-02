@@ -1,0 +1,20 @@
+---
+# A tunnel unit (wg-quick@wg0, awg-quick@awg0) comes up only after the NAT table,
+# the client baseline and the access-profile policy are in the kernel.
+# Input: wg_server_dropin_unit.
+- name: Tunnel | Drop-in directory for {{ wg_server_dropin_unit }}
+  ansible.builtin.file:
+    path: /etc/systemd/system/{{ wg_server_dropin_unit }}.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: "Tunnel | Wait for CorpVPN tables: {{ wg_server_dropin_unit }}"
+  ansible.builtin.template:
+    src: tunnel-dropin.conf.j2
+    dest: /etc/systemd/system/{{ wg_server_dropin_unit }}.d/10-corpvpn.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: WireGuard | reload systemd

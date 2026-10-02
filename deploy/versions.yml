@@ -1,0 +1,46 @@
+# Every third-party component the deploy downloads, pinned in one place.
+#
+# The playbooks load this file (vars_files), so a bump here reaches every host on
+# the next run: Xray is replaced when the version changes, AmneziaWG is rebuilt
+# when any of the Go / amneziawg-go / amneziawg-tools pins change. Downloads are
+# verified against the sha256 below; git checkouts must land on the pinned commit.
+#
+# To test another version on one gateway, override the keys in
+# deploy/ansible/group_vars/overrides.yml (it is passed after this file).
+#
+# Bumping: take the digest from the release itself (Xray-core ships a .dgst file
+# next to each zip; go.dev/dl lists the sha256 of every archive) and the commit
+# the tag points to (git ls-remote --tags <repo>).
+
+# --- Xray-core (VLESS / REALITY) -----------------------------------------------
+corpvpn_xray_version: "26.3.27"
+corpvpn_xray_release_url: https://github.com/XTLS/Xray-core/releases/download
+# Keyed by ansible_architecture.
+corpvpn_xray_assets:
+  x86_64:
+    file: Xray-linux-64.zip
+    sha256: 23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae
+  aarch64:
+    file: Xray-linux-arm64-v8a.zip
+    sha256: 4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c
+
+# --- Go toolchain (builds amneziawg-go; not used at run time) ------------------
+# Must be at least the "go" line of the pinned amneziawg-go go.mod
+# (corpvpn_amneziawg_go_min_go); the build runs with GOTOOLCHAIN=local, so Go never
+# fetches another toolchain behind this pin.
+corpvpn_go_version: "1.26.8"
+corpvpn_go_url: https://go.dev/dl
+# Keyed by Go architecture name.
+corpvpn_go_sha256:
+  amd64: d0f743b33e8d8945e6b1f432edd15785c70507121d6e2a723b21285eddf8b57b
+  arm64: 211ffced9dcb9633a55eac6364816ec0ddd951389a740e88fa8b3337971bdda0
+
+# --- AmneziaWG ---------------------------------------------------------------
+corpvpn_amneziawg_go_repo: https://github.com/amnezia-vpn/amneziawg-go.git
+corpvpn_amneziawg_go_version: v3.1.20260828
+corpvpn_amneziawg_go_commit: b5928efb6ca19f0153958460c3d141f04abc5c2e
+corpvpn_amneziawg_go_min_go: "1.25.0"
+
+corpvpn_amneziawg_tools_repo: https://github.com/amnezia-vpn/amneziawg-tools.git
+corpvpn_amneziawg_tools_version: v3.1.20260812
+corpvpn_amneziawg_tools_commit: ee0f0a9aa34ff0a0da4b3433b9512781cfe02843

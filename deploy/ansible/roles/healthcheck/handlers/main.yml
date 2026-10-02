@@ -1,0 +1,4 @@
+---
+- name: Health check | reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true

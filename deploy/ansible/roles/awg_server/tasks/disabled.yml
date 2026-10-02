@@ -1,0 +1,19 @@
+---
+# awg removed from the protocols: stop the interface and the peer mirror. The
+# key and the obfuscation parameters stay, so enabling awg again brings back
+# every AmneziaWG config already issued.
+- name: AmneziaWG | Look for units from an earlier deploy # noqa: command-instead-of-module - read-only diagnostics need exact output
+  ansible.builtin.command: systemctl is-enabled awg-quick@{{ awg_server_iface }} awg-peer-sync.timer
+  register: awg_server_leftovers
+  changed_when: false
+  failed_when: false
+
+- name: AmneziaWG | Stop and disable them
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - awg-peer-sync.timer
+    - awg-quick@{{ awg_server_iface }}.service
+  when: "'enabled' in awg_server_leftovers.stdout_lines | default([])"

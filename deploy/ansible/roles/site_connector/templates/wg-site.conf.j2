@@ -1,0 +1,33 @@
+# {{ ansible_managed }}
+# CorpVPN site link ({{ site_link_side }} side). Keys stay in
+# /etc/wireguard/{{ site_link_iface }}.key / .psk and are loaded by PostUp.
+{% set key_dir = '/etc/wireguard/' ~ site_link_iface %}
+{% if site_link_side == 'gateway' %}
+{%   set peer_pub = hostvars[site_link_connector_host].site_link_pubkey.stdout %}
+[Interface]
+Address = {{ site_link_gateway_address }}
+ListenPort = {{ site_link_port }}
+MTU = {{ site_link_mtu }}
+PostUp = wg set %i private-key {{ key_dir }}.key peer {{ peer_pub }} preshared-key {{ key_dir }}.psk
+
+[Peer]
+# site connector {{ site_link_connector_host }}; corporate ranges are routed here
+PublicKey = {{ peer_pub }}
+AllowedIPs = {{ ([site_link_connector_address.split('/')[0] ~ '/32'] + site_link_corp_cidrs) | join(', ') }}
+{% else %}
+{%   set peer_pub = hostvars[site_link_gateway_host].site_link_pubkey.stdout %}
+{%   set endpoint = site_link_gateway_endpoint or hostvars[site_link_gateway_host].ansible_host | default(site_link_gateway_host) %}
+[Interface]
+Address = {{ site_link_connector_address }}
+MTU = {{ site_link_mtu }}
+PostUp = wg set %i private-key {{ key_dir }}.key peer {{ peer_pub }} preshared-key {{ key_dir }}.psk
+PostUp = nft -f {{ key_dir }}.nft
+PostDown = nft delete table inet corpvpn_site
+
+[Peer]
+# gateway {{ site_link_gateway_host }}; VPN clients' replies go back here
+PublicKey = {{ peer_pub }}
+Endpoint = {{ endpoint }}:{{ site_link_port }}
+AllowedIPs = {{ ([site_link_gateway_address.split('/')[0] ~ '/32'] + site_link_client_nets) | join(', ') }}
+PersistentKeepalive = {{ site_link_keepalive }}
+{% endif %}

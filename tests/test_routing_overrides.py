@@ -10,7 +10,7 @@ from unittest.mock import patch
 from urllib.parse import quote
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = PROJECT_ROOT / "amnezia-panel-src"
+SRC_DIR = PROJECT_ROOT / "panel"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
@@ -21,6 +21,8 @@ if "dotenv" not in sys.modules:
 
 try:
     import config
+    import db
+    import network_policy
     import routing_overrides as ro
     import xray_clients as xc
     import xray_manager as xm
@@ -28,6 +30,8 @@ try:
     SERVICE_DEPS_AVAILABLE = True
 except ModuleNotFoundError:
     config = None
+    db = None
+    network_policy = None
     ro = None
     xc = None
     xm = None
@@ -52,12 +56,41 @@ class RoutingOverrideServiceTests(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.original_store = config.ROUTING_OVERRIDES_PATH
         self.original_xray_clients = config.XRAY_CLIENTS_PATH
+        self.original_direct_ip_rules = config.XRAY_DIRECT_IP_RULES
+        self.original_egress_outbound_tag = config.XRAY_EGRESS_OUTBOUND_TAG
+        self.original_egress_balancer_tag = config.XRAY_EGRESS_BALANCER_TAG
+        self.original_egress_outbound_tags = config.XRAY_EGRESS_OUTBOUND_TAGS
+        # config.py ships neutral defaults (no gateway address), so pin one here.
+        self.original_xray_client_server = config.XRAY_CLIENT_SERVER
+        config.XRAY_CLIENT_SERVER = "vpn.example.com"
+        # Domain routing only here; client isolation is covered by test_network_policy.
+        self.original_isolation = config.NETWORK_POLICY_CLIENT_ISOLATION
+        config.NETWORK_POLICY_CLIENT_ISOLATION = False
+        # Phase 1: data lives in SQLite; engines resolve config.*_DB_PATH lazily,
+        # so repointing here is enough for per-test isolation.
+        self.original_routing_db = config.ROUTING_DB_PATH
+        self.original_vless_db = config.VLESS_DB_PATH
         config.ROUTING_OVERRIDES_PATH = str(Path(self.tmpdir.name) / "routing_overrides.json")
         config.XRAY_CLIENTS_PATH = str(Path(self.tmpdir.name) / "xray_clients.json")
+        config.ROUTING_DB_PATH = str(Path(self.tmpdir.name) / "routing_rules.db")
+        config.VLESS_DB_PATH = str(Path(self.tmpdir.name) / "vless.db")
+        config.XRAY_DIRECT_IP_RULES = ()
+        config.XRAY_EGRESS_OUTBOUND_TAG = "to-egress"
+        config.XRAY_EGRESS_BALANCER_TAG = ""
+        config.XRAY_EGRESS_OUTBOUND_TAGS = ()
 
     def tearDown(self):
         config.ROUTING_OVERRIDES_PATH = self.original_store
         config.XRAY_CLIENTS_PATH = self.original_xray_clients
+        config.XRAY_DIRECT_IP_RULES = self.original_direct_ip_rules
+        config.XRAY_EGRESS_OUTBOUND_TAG = self.original_egress_outbound_tag
+        config.XRAY_EGRESS_BALANCER_TAG = self.original_egress_balancer_tag
+        config.XRAY_EGRESS_OUTBOUND_TAGS = self.original_egress_outbound_tags
+        config.XRAY_CLIENT_SERVER = self.original_xray_client_server
+        config.NETWORK_POLICY_CLIENT_ISOLATION = self.original_isolation
+        config.ROUTING_DB_PATH = self.original_routing_db
+        config.VLESS_DB_PATH = self.original_vless_db
+        db.dispose_all_engines()
         self.tmpdir.cleanup()
 
     def test_normalize_domain_accepts_trimmed_and_lowercases(self):
@@ -83,7 +116,7 @@ class RoutingOverrideServiceTests(unittest.TestCase):
         ro.create_override(
             match_type=RoutingMatchType.EXACT,
             value="YouTube.com",
-            route=RoutingRoute.NON_RU,
+            route=RoutingRoute.EGRESS,
             comment="first",
         )
 
@@ -91,7 +124,7 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             ro.create_override(
                 match_type=RoutingMatchType.EXACT,
                 value="youtube.com.",
-                route=RoutingRoute.RU,
+                route=RoutingRoute.DIRECT,
                 comment="duplicate",
             )
 
@@ -101,7 +134,7 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             match_type=RoutingMatchType.EXACT,
             value="gosuslugi.ru",
             normalized_value="gosuslugi.ru",
-            route=RoutingRoute.RU,
+            route=RoutingRoute.DIRECT,
             comment="",
             enabled=True,
             created_at="2026-04-20T10:00:00+00:00",
@@ -113,7 +146,7 @@ class RoutingOverrideServiceTests(unittest.TestCase):
                 "match_type": RoutingMatchType.SUFFIX,
                 "value": "youtube.com",
                 "normalized_value": "youtube.com",
-                "route": RoutingRoute.NON_RU,
+                "route": RoutingRoute.EGRESS,
             }
         )
 
@@ -127,76 +160,97 @@ class RoutingOverrideServiceTests(unittest.TestCase):
         ro.create_override(
             match_type=RoutingMatchType.SUFFIX,
             value="example.com",
-            route=RoutingRoute.RU,
+            route=RoutingRoute.DIRECT,
             comment="route whole zone direct",
         )
-        exact_non_ru = ro.create_override(
+        exact_egress = ro.create_override(
             match_type=RoutingMatchType.EXACT,
             value="youtube.com",
-            route=RoutingRoute.NON_RU,
-            comment="route exact host to NL",
+            route=RoutingRoute.EGRESS,
+            comment="route exact host through egress",
         )
         disabled = ro.create_override(
             match_type=RoutingMatchType.EXACT,
             value="disabled.example.net",
-            route=RoutingRoute.NON_RU,
+            route=RoutingRoute.EGRESS,
             comment="disabled rule must be ignored",
         )
         ro.toggle_override(disabled.id)
 
         suffix_match = ro.check_domain("api.example.com")
         self.assertTrue(suffix_match.matched)
-        self.assertEqual(suffix_match.route, RoutingRoute.RU)
+        self.assertEqual(suffix_match.route, RoutingRoute.DIRECT)
         self.assertEqual(suffix_match.outbound, "direct")
         self.assertEqual(suffix_match.rendered_rule, "domain:example.com -> direct")
 
         exact_match = ro.check_domain("YouTube.com.")
         self.assertTrue(exact_match.matched)
-        self.assertEqual(exact_match.override_id, exact_non_ru.id)
+        self.assertEqual(exact_match.override_id, exact_egress.id)
         self.assertEqual(exact_match.match_type, RoutingMatchType.EXACT)
         self.assertEqual(exact_match.outbound, "to-egress")
 
-        ru_zone_match = ro.check_domain("shop.ozon.ru")
-        self.assertTrue(ru_zone_match.matched)
-        self.assertEqual(ru_zone_match.source, "builtin_ru_zone")
-        self.assertEqual(ru_zone_match.route, RoutingRoute.RU)
-        self.assertEqual(ru_zone_match.outbound, "direct")
-        self.assertEqual(ru_zone_match.rendered_rule, "domain:ru -> direct")
-
-        rf_zone_match = ro.check_domain("пример.рф")
-        self.assertTrue(rf_zone_match.matched)
-        self.assertEqual(rf_zone_match.source, "builtin_ru_zone")
-        self.assertEqual(rf_zone_match.normalized_value, "xn--e1afmkfd.xn--p1ai")
-        self.assertEqual(rf_zone_match.rendered_rule, "domain:xn--p1ai -> direct")
+        # No built-in country zones: .ru / .рф are ordinary domains now.
+        for host in ("shop.ozon.ru", "пример.рф"):
+            zone = ro.check_domain(host)
+            self.assertFalse(zone.matched)
+            self.assertEqual(zone.source, "fallback")
 
         fallback = ro.check_domain("disabled.example.net")
         self.assertFalse(fallback.matched)
         self.assertEqual(fallback.source, "fallback")
-        self.assertIn("geoip:ru", fallback.outbound)
+        self.assertEqual(fallback.route, RoutingRoute.EGRESS)
+        self.assertEqual(fallback.outbound, "to-egress")
+        self.assertEqual(fallback.rendered_rule, "default -> to-egress")
+
+        config.XRAY_DEFAULT_ROUTE = "direct"
+        try:
+            self.assertEqual(ro.check_domain("disabled.example.net").outbound, "direct")
+        finally:
+            config.XRAY_DEFAULT_ROUTE = "egress"
+
+    def test_route_values_are_direct_egress_and_block_only(self):
+        self.assertEqual([route.value for route in RoutingRoute], ["direct", "egress", "block"])
+        for value in ("ru", "egress_rule", "mars"):
+            with self.assertRaises(ValueError):
+                RoutingRoute(value)
+
+    def test_block_rules_render_first_and_use_the_block_outbound(self):
+        ro.create_override(match_type=RoutingMatchType.SUFFIX, value="example.org", route=RoutingRoute.DIRECT)
+        ro.create_override(match_type=RoutingMatchType.SUFFIX, value="tracker.example", route=RoutingRoute.BLOCK)
+        preview = ro.get_preview()
+        self.assertEqual(
+            [rule.rendered_rule for rule in preview.manual_rules],
+            ["domain:tracker.example -> block", "domain:example.org -> direct"],
+        )
+        # After the guard rule and geoip:private.
+        self.assertEqual(preview.rendered_routing["rules"][2],
+                         {"type": "field", "domain": ["domain:tracker.example"], "outboundTag": "block"})
+        check = ro.check_domain("ads.tracker.example")
+        self.assertEqual((check.route, check.outbound), (RoutingRoute.BLOCK, "block"))
 
     def test_preview_orders_by_route_then_match_type_then_creation_time(self):
         ro.create_override(
             match_type=RoutingMatchType.SUFFIX,
             value="youtube.com",
-            route=RoutingRoute.NON_RU,
+            route=RoutingRoute.EGRESS,
             comment="suffix non-ru",
         )
         ro.create_override(
             match_type=RoutingMatchType.SUFFIX,
             value="gosuslugi.ru",
-            route=RoutingRoute.RU,
+            route=RoutingRoute.DIRECT,
             comment="suffix ru",
         )
         ro.create_override(
             match_type=RoutingMatchType.EXACT,
             value="video.youtube.com",
-            route=RoutingRoute.NON_RU,
+            route=RoutingRoute.EGRESS,
             comment="exact non-ru",
         )
         ro.create_override(
             match_type=RoutingMatchType.EXACT,
             value="nalog.ru",
-            route=RoutingRoute.RU,
+            route=RoutingRoute.DIRECT,
             comment="exact ru",
         )
 
@@ -216,6 +270,7 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             {
                 "domainStrategy": "IPIfNonMatch",
                 "rules": [
+                    *network_policy.xray_guard_rules(),
                     {
                         "type": "field",
                         "ip": ["geoip:private"],
@@ -243,21 +298,6 @@ class RoutingOverrideServiceTests(unittest.TestCase):
                     },
                     {
                         "type": "field",
-                        "domain": ["domain:ru"],
-                        "outboundTag": "direct",
-                    },
-                    {
-                        "type": "field",
-                        "domain": ["domain:xn--p1ai"],
-                        "outboundTag": "direct",
-                    },
-                    {
-                        "type": "field",
-                        "ip": ["geoip:ru"],
-                        "outboundTag": "direct",
-                    },
-                    {
-                        "type": "field",
                         "network": "tcp,udp",
                         "outboundTag": "to-egress",
                     },
@@ -265,19 +305,133 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             },
         )
 
+    def test_preview_can_route_egress_through_balancer(self):
+        config.XRAY_EGRESS_BALANCER_TAG = "egress-balancer"
+        ro.create_override(
+            match_type=RoutingMatchType.EXACT,
+            value="youtube.com",
+            route=RoutingRoute.EGRESS,
+        )
+
+        preview = ro.get_preview()
+        exact_rule = next(
+            rule for rule in preview.rendered_routing["rules"]
+            if rule.get("domain") == ["full:youtube.com"]
+        )
+        default_rule = preview.rendered_routing["rules"][-1]
+
+        self.assertEqual(exact_rule["balancerTag"], "egress-balancer")
+        self.assertNotIn("outboundTag", exact_rule)
+        self.assertEqual(default_rule["balancerTag"], "egress-balancer")
+        self.assertNotIn("outboundTag", default_rule)
+        self.assertEqual(
+            preview.rendered_routing["balancers"],
+            [
+                {
+                    "tag": "egress-balancer",
+                    "selector": ["to-egress"],
+                    "strategy": {"type": "leastPing"},
+                }
+            ],
+        )
+        self.assertIn("default -> egress-balancer", preview.routing_order)
+        self.assertEqual(ro.check_domain("youtube.com").outbound, "egress-balancer")
+
+    def test_preview_balancer_selector_includes_all_egress_tags(self):
+        # Regression for "VLESS works with interruptions": the balancer selector
+        # must list every egress so leastPing has a real failover target. A
+        # single-tag selector dropped all non-RU traffic whenever the observatory
+        # flapped the only egress down. Duplicates collapse, order preserved.
+        config.XRAY_EGRESS_BALANCER_TAG = "egress-balancer"
+        config.XRAY_EGRESS_OUTBOUND_TAGS = ("to-egress", "to-egress-2", "to-egress")
+        ro.create_override(
+            match_type=RoutingMatchType.EXACT,
+            value="youtube.com",
+            route=RoutingRoute.EGRESS,
+        )
+
+        preview = ro.get_preview()
+
+        self.assertEqual(
+            preview.rendered_routing["balancers"],
+            [
+                {
+                    "tag": "egress-balancer",
+                    "selector": ["to-egress", "to-egress-2"],
+                    "strategy": {"type": "leastPing"},
+                }
+            ],
+        )
+
+    def test_merged_config_syncs_observatory_with_balancer_selector(self):
+        # The observatory must probe every egress the balancer can pick, or
+        # leastPing has no health data for the unprobed ones (and silently never
+        # fails over to them). The merge derives observatory.subjectSelector from
+        # the rendered balancer selector, making the panel the single source of
+        # truth and widening any stale single-egress observatory in the base config.
+        original_base_path = config.XRAY_BASE_CONFIG_PATH
+        config.XRAY_BASE_CONFIG_PATH = str(Path(self.tmpdir.name) / "config.json")
+        config.XRAY_EGRESS_BALANCER_TAG = "egress-balancer"
+        config.XRAY_EGRESS_OUTBOUND_TAGS = ("to-egress", "to-egress-2")
+        try:
+            Path(config.XRAY_BASE_CONFIG_PATH).write_text(
+                json.dumps(
+                    {
+                        "log": {"loglevel": "warning"},
+                        "inbounds": [
+                            {
+                                "tag": config.XRAY_CLIENT_INBOUND_TAG,
+                                "settings": {"clients": []},
+                            }
+                        ],
+                        "outbounds": [
+                            {"tag": "direct", "protocol": "freedom"},
+                            {"tag": "to-egress"},
+                            {"tag": "to-egress-2"},
+                        ],
+                        # Stale single-egress observatory the merge must widen.
+                        "observatory": {
+                            "subjectSelector": ["to-egress"],
+                            "probeURL": "https://www.google.com/generate_204",
+                            "probeInterval": "10s",
+                            "enableConcurrency": True,
+                        },
+                        "routing": {"domainStrategy": "AsIs", "rules": []},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            merged = xm.build_merged_config()
+
+            self.assertEqual(
+                merged["observatory"]["subjectSelector"], ["to-egress", "to-egress-2"]
+            )
+            self.assertEqual(merged["observatory"]["probeURL"], config.XRAY_EGRESS_PROBE_URL)
+            self.assertEqual(
+                merged["observatory"]["probeInterval"], config.XRAY_EGRESS_PROBE_INTERVAL
+            )
+            self.assertEqual(
+                merged["routing"]["balancers"][0]["selector"],
+                ["to-egress", "to-egress-2"],
+            )
+        finally:
+            config.XRAY_BASE_CONFIG_PATH = original_base_path
+
     def test_toggle_and_delete_affect_persistence(self):
         created = ro.create_override(
             match_type=RoutingMatchType.EXACT,
             value="kinopoisk.ru",
-            route=RoutingRoute.RU,
+            route=RoutingRoute.DIRECT,
         )
 
         toggled = ro.toggle_override(created.id)
         self.assertFalse(toggled.enabled)
 
-        stored = json.loads(Path(config.ROUTING_OVERRIDES_PATH).read_text(encoding="utf-8"))
+        # Phase 1: persistence lives in SQLite — re-read through the store.
+        stored = ro.list_overrides()
         self.assertEqual(len(stored), 1)
-        self.assertFalse(stored[0]["enabled"])
+        self.assertFalse(stored[0].enabled)
 
         ro.delete_override(created.id)
         self.assertEqual(ro.list_overrides(), [])
@@ -293,7 +447,7 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             ro.create_override(
                 match_type=RoutingMatchType.EXACT,
                 value="nalog.ru",
-                route=RoutingRoute.RU,
+                route=RoutingRoute.DIRECT,
             )
             exported = xm.export_routing()
 
@@ -379,15 +533,22 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             ro.create_override(
                 match_type=RoutingMatchType.EXACT,
                 value="nalog.ru",
-                route=RoutingRoute.RU,
+                route=RoutingRoute.DIRECT,
             )
 
             merged = xm.build_merged_config()
 
             self.assertEqual(merged["log"], {"loglevel": "warning"})
-            self.assertEqual(merged["outbounds"], [{"tag": "direct", "protocol": "freedom"}])
+            # The guard rule needs a blackhole "block" outbound: Xray would hand a
+            # rule with an unknown tag to the default (direct) outbound.
+            self.assertEqual(
+                merged["outbounds"],
+                [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
+            )
+            self.assertEqual(merged["routing"]["rules"][0], network_policy.xray_guard_rules()[0])
             self.assertEqual(merged["routing"]["domainStrategy"], "IPIfNonMatch")
-            self.assertTrue(any(rule.get("ip") == ["geoip:ru"] for rule in merged["routing"]["rules"]))
+            self.assertFalse(any("geoip:example" in rule.get("ip", []) for rule in merged["routing"]["rules"]))
+            self.assertEqual(merged["routing"]["rules"][-1], {"type": "field", "network": "tcp,udp", "outboundTag": "to-egress"})
         finally:
             config.XRAY_ROUTING_EXPORT_PATH = original_export_path
             config.XRAY_MERGED_CONFIG_EXPORT_PATH = original_merged_path
@@ -423,7 +584,7 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             ro.create_override(
                 match_type=RoutingMatchType.EXACT,
                 value="nalog.ru",
-                route=RoutingRoute.RU,
+                route=RoutingRoute.DIRECT,
             )
 
             exported = xm.export_routing()
@@ -433,7 +594,10 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             self.assertIsNotNone(exported.merged_config_sha256)
             merged = json.loads(Path(config.XRAY_MERGED_CONFIG_EXPORT_PATH).read_text(encoding="utf-8"))
             self.assertEqual(merged["routing"], exported.rendered_routing)
-            self.assertEqual(merged["outbounds"], [{"tag": "direct"}, {"tag": "to-egress"}])
+            self.assertEqual(
+                merged["outbounds"],
+                [{"tag": "direct"}, {"tag": "to-egress"}, {"tag": "block", "protocol": "blackhole"}],
+            )
         finally:
             config.XRAY_ROUTING_EXPORT_PATH = original_export_path
             config.XRAY_MERGED_CONFIG_EXPORT_PATH = original_merged_path
@@ -465,8 +629,9 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             self.assertEqual(share.client_config["routing"]["rules"][0]["outboundTag"], "direct")
             self.assertEqual(share.client_config["routing"]["rules"][1]["outboundTag"], "proxy")
             reality_settings = share.outbound_config["streamSettings"]["realitySettings"]
+            # Newer cores read "password", older ones only "publicKey".
             self.assertEqual(reality_settings["password"], "public-key")
-            self.assertNotIn("publicKey", reality_settings)
+            self.assertEqual(reality_settings["publicKey"], "public-key")
 
             rendered = xc.inject_clients_into_config(
                 {
@@ -654,7 +819,7 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             self.assertEqual(checks["base_config_placeholders"].status, "ok")
             self.assertEqual(checks["client_inbound"].status, "ok")
             self.assertEqual(checks["client_inbound_sniffing"].status, "ok")
-            self.assertEqual(checks["to_egress_outbound"].status, "ok")
+            self.assertEqual(checks["egress_outbound"].status, "ok")
             self.assertEqual(checks["merged_config_sync"].status, "ok")
         finally:
             config.XRAY_ROUTING_EXPORT_PATH = original_export_path
@@ -757,7 +922,7 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             ro.create_override(
                 match_type=RoutingMatchType.EXACT,
                 value="youtube.com",
-                route=RoutingRoute.NON_RU,
+                route=RoutingRoute.EGRESS,
             )
 
             with patch.object(
@@ -811,7 +976,7 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             ro.create_override(
                 match_type=RoutingMatchType.EXACT,
                 value="nalog.ru",
-                route=RoutingRoute.RU,
+                route=RoutingRoute.DIRECT,
             )
             xm.export_routing()
 
@@ -864,7 +1029,7 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             ro.create_override(
                 match_type=RoutingMatchType.EXACT,
                 value="nalog.ru",
-                route=RoutingRoute.RU,
+                route=RoutingRoute.DIRECT,
             )
 
             with patch.object(
@@ -888,6 +1053,64 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             self.assertEqual(state["action"], "apply")
             self.assertEqual(state["status"], "ok")
             self.assertEqual(state["backup_path"], applied.backup_path)
+        finally:
+            config.XRAY_ROUTING_EXPORT_PATH = original_export_path
+            config.XRAY_MERGED_CONFIG_EXPORT_PATH = original_merged_path
+            config.XRAY_BASE_CONFIG_PATH = original_base_path
+            config.XRAY_ACTION_STATE_PATH = original_state_path
+            config.XRAY_APPLY_BACKUP_DIR = original_backup_dir
+            config.XRAY_VALIDATE_COMMAND = original_validate
+            config.XRAY_RELOAD_COMMAND = original_reload
+
+    def test_xray_apply_skips_restart_when_config_unchanged(self):
+        original_export_path = config.XRAY_ROUTING_EXPORT_PATH
+        original_merged_path = config.XRAY_MERGED_CONFIG_EXPORT_PATH
+        original_base_path = config.XRAY_BASE_CONFIG_PATH
+        original_state_path = config.XRAY_ACTION_STATE_PATH
+        original_backup_dir = config.XRAY_APPLY_BACKUP_DIR
+        original_validate = config.XRAY_VALIDATE_COMMAND
+        original_reload = config.XRAY_RELOAD_COMMAND
+        config.XRAY_ROUTING_EXPORT_PATH = str(Path(self.tmpdir.name) / "routing.generated.json")
+        config.XRAY_MERGED_CONFIG_EXPORT_PATH = str(Path(self.tmpdir.name) / "config.generated.json")
+        config.XRAY_BASE_CONFIG_PATH = str(Path(self.tmpdir.name) / "config.json")
+        config.XRAY_ACTION_STATE_PATH = str(Path(self.tmpdir.name) / "xray_action_state.json")
+        config.XRAY_APPLY_BACKUP_DIR = str(Path(self.tmpdir.name) / "backups")
+        config.XRAY_VALIDATE_COMMAND = "xray run -test -config {config_path}"
+        config.XRAY_RELOAD_COMMAND = "systemctl reload xray"
+        Path(config.XRAY_BASE_CONFIG_PATH).write_text(
+            json.dumps(
+                {
+                    "inbounds": [{"tag": config.XRAY_CLIENT_INBOUND_TAG, "settings": {"clients": []}}],
+                    "outbounds": [{"tag": "direct"}],
+                    "routing": {"rules": []},
+                }
+            ),
+            encoding="utf-8",
+        )
+        try:
+            ro.create_override(
+                match_type=RoutingMatchType.EXACT, value="nalog.ru", route=RoutingRoute.DIRECT
+            )
+            ok = types.SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+            # First apply: real change -> validate + reload (2 subprocess calls).
+            with patch.object(xm.subprocess, "run", return_value=ok) as first:
+                applied = xm.apply_xray()
+            self.assertTrue(applied.reloaded)
+            self.assertEqual(applied.status, "ok")
+            self.assertEqual(first.call_count, 2)
+
+            # Second apply with nothing changed: validate only, restart SKIPPED.
+            with patch.object(xm.subprocess, "run", return_value=ok) as second:
+                again = xm.apply_xray()
+            self.assertFalse(again.reloaded)
+            self.assertEqual(again.status, "unchanged")
+            self.assertEqual(again.command, [])
+            self.assertEqual(again.backup_path, "")
+            self.assertEqual(second.call_count, 1)  # validate ran, reload did not
+
+            state = json.loads(Path(config.XRAY_ACTION_STATE_PATH).read_text(encoding="utf-8"))
+            self.assertEqual(state["action"], "apply")
+            self.assertEqual(state["status"], "ok")
         finally:
             config.XRAY_ROUTING_EXPORT_PATH = original_export_path
             config.XRAY_MERGED_CONFIG_EXPORT_PATH = original_merged_path
@@ -930,7 +1153,7 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             ro.create_override(
                 match_type=RoutingMatchType.EXACT,
                 value="nalog.ru",
-                route=RoutingRoute.RU,
+                route=RoutingRoute.DIRECT,
             )
 
             with patch.object(
@@ -961,6 +1184,143 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             config.XRAY_VALIDATE_COMMAND = original_validate
             config.XRAY_RELOAD_COMMAND = original_reload
 
+    def test_xray_push_command_runs_before_validate(self):
+        original_export_path = config.XRAY_ROUTING_EXPORT_PATH
+        original_merged_path = config.XRAY_MERGED_CONFIG_EXPORT_PATH
+        original_base_path = config.XRAY_BASE_CONFIG_PATH
+        original_state_path = config.XRAY_ACTION_STATE_PATH
+        original_validate = config.XRAY_VALIDATE_COMMAND
+        original_push = config.XRAY_PUSH_COMMAND
+        config.XRAY_ROUTING_EXPORT_PATH = str(Path(self.tmpdir.name) / "routing.generated.json")
+        config.XRAY_MERGED_CONFIG_EXPORT_PATH = str(Path(self.tmpdir.name) / "config.generated.json")
+        config.XRAY_BASE_CONFIG_PATH = str(Path(self.tmpdir.name) / "config.json")
+        config.XRAY_ACTION_STATE_PATH = str(Path(self.tmpdir.name) / "xray_action_state.json")
+        config.XRAY_VALIDATE_COMMAND = "xray run -test -config {config_path}"
+        config.XRAY_PUSH_COMMAND = "rsync {merged_config_path} remote:/etc/xray/config.json"
+        try:
+            Path(config.XRAY_BASE_CONFIG_PATH).write_text(
+                json.dumps(
+                    {
+                        "inbounds": [{"tag": config.XRAY_CLIENT_INBOUND_TAG, "settings": {"clients": []}}],
+                        "outbounds": [{"tag": "direct"}],
+                        "routing": {"rules": []},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            call_log: list[list[str]] = []
+
+            def record_and_succeed(cmd, **kwargs):
+                call_log.append(list(cmd))
+                return types.SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+            with patch.object(xm.subprocess, "run", side_effect=record_and_succeed):
+                xm.validate_routing()
+
+            self.assertEqual(len(call_log), 2)
+            self.assertIn(config.XRAY_MERGED_CONFIG_EXPORT_PATH, call_log[0])
+            self.assertIn(config.XRAY_MERGED_CONFIG_EXPORT_PATH, call_log[1])
+            self.assertIn("rsync", call_log[0][0])
+            self.assertIn("xray", call_log[1][0])
+        finally:
+            config.XRAY_ROUTING_EXPORT_PATH = original_export_path
+            config.XRAY_MERGED_CONFIG_EXPORT_PATH = original_merged_path
+            config.XRAY_BASE_CONFIG_PATH = original_base_path
+            config.XRAY_ACTION_STATE_PATH = original_state_path
+            config.XRAY_VALIDATE_COMMAND = original_validate
+            config.XRAY_PUSH_COMMAND = original_push
+
+    def test_xray_push_failure_raises_command_error(self):
+        original_export_path = config.XRAY_ROUTING_EXPORT_PATH
+        original_merged_path = config.XRAY_MERGED_CONFIG_EXPORT_PATH
+        original_base_path = config.XRAY_BASE_CONFIG_PATH
+        original_state_path = config.XRAY_ACTION_STATE_PATH
+        original_validate = config.XRAY_VALIDATE_COMMAND
+        original_push = config.XRAY_PUSH_COMMAND
+        config.XRAY_ROUTING_EXPORT_PATH = str(Path(self.tmpdir.name) / "routing.generated.json")
+        config.XRAY_MERGED_CONFIG_EXPORT_PATH = str(Path(self.tmpdir.name) / "config.generated.json")
+        config.XRAY_BASE_CONFIG_PATH = str(Path(self.tmpdir.name) / "config.json")
+        config.XRAY_ACTION_STATE_PATH = str(Path(self.tmpdir.name) / "xray_action_state.json")
+        config.XRAY_VALIDATE_COMMAND = "xray run -test -config {config_path}"
+        config.XRAY_PUSH_COMMAND = "rsync {merged_config_path} remote:/etc/xray/config.json"
+        try:
+            Path(config.XRAY_BASE_CONFIG_PATH).write_text(
+                json.dumps(
+                    {
+                        "inbounds": [{"tag": config.XRAY_CLIENT_INBOUND_TAG, "settings": {"clients": []}}],
+                        "outbounds": [{"tag": "direct"}],
+                        "routing": {"rules": []},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(
+                xm.subprocess,
+                "run",
+                return_value=types.SimpleNamespace(returncode=1, stdout="", stderr="Connection refused"),
+            ):
+                with self.assertRaises(xm.XrayCommandError) as ctx:
+                    xm.validate_routing()
+            self.assertIn("Connection refused", str(ctx.exception))
+        finally:
+            config.XRAY_ROUTING_EXPORT_PATH = original_export_path
+            config.XRAY_MERGED_CONFIG_EXPORT_PATH = original_merged_path
+            config.XRAY_BASE_CONFIG_PATH = original_base_path
+            config.XRAY_ACTION_STATE_PATH = original_state_path
+            config.XRAY_VALIDATE_COMMAND = original_validate
+            config.XRAY_PUSH_COMMAND = original_push
+
+    def test_xray_apply_with_push_calls_three_subprocess_runs(self):
+        original_export_path = config.XRAY_ROUTING_EXPORT_PATH
+        original_merged_path = config.XRAY_MERGED_CONFIG_EXPORT_PATH
+        original_base_path = config.XRAY_BASE_CONFIG_PATH
+        original_state_path = config.XRAY_ACTION_STATE_PATH
+        original_backup_dir = config.XRAY_APPLY_BACKUP_DIR
+        original_validate = config.XRAY_VALIDATE_COMMAND
+        original_reload = config.XRAY_RELOAD_COMMAND
+        original_push = config.XRAY_PUSH_COMMAND
+        original_public_key = config.XRAY_CLIENT_REALITY_PUBLIC_KEY
+        original_short_id = config.XRAY_CLIENT_REALITY_SHORT_ID
+        config.XRAY_ROUTING_EXPORT_PATH = str(Path(self.tmpdir.name) / "routing.generated.json")
+        config.XRAY_MERGED_CONFIG_EXPORT_PATH = str(Path(self.tmpdir.name) / "config.generated.json")
+        config.XRAY_BASE_CONFIG_PATH = str(Path(self.tmpdir.name) / "config.json")
+        config.XRAY_ACTION_STATE_PATH = str(Path(self.tmpdir.name) / "xray_action_state.json")
+        config.XRAY_APPLY_BACKUP_DIR = str(Path(self.tmpdir.name) / "backups")
+        config.XRAY_VALIDATE_COMMAND = "xray run -test -config {config_path}"
+        config.XRAY_RELOAD_COMMAND = "systemctl reload xray"
+        config.XRAY_PUSH_COMMAND = "rsync {merged_config_path} remote:/etc/xray/config.json"
+        config.XRAY_CLIENT_REALITY_PUBLIC_KEY = "public-key"
+        config.XRAY_CLIENT_REALITY_SHORT_ID = "abcd1234"
+        try:
+            Path(config.XRAY_BASE_CONFIG_PATH).write_text(
+                json.dumps(
+                    {
+                        "inbounds": [{"tag": config.XRAY_CLIENT_INBOUND_TAG, "settings": {"clients": []}}],
+                        "outbounds": [{"tag": "direct"}],
+                        "routing": {"rules": []},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(
+                xm.subprocess,
+                "run",
+                return_value=types.SimpleNamespace(returncode=0, stdout="ok\n", stderr=""),
+            ) as run_mock:
+                xm.apply_xray()
+            self.assertEqual(run_mock.call_count, 3)
+        finally:
+            config.XRAY_ROUTING_EXPORT_PATH = original_export_path
+            config.XRAY_MERGED_CONFIG_EXPORT_PATH = original_merged_path
+            config.XRAY_BASE_CONFIG_PATH = original_base_path
+            config.XRAY_ACTION_STATE_PATH = original_state_path
+            config.XRAY_APPLY_BACKUP_DIR = original_backup_dir
+            config.XRAY_VALIDATE_COMMAND = original_validate
+            config.XRAY_RELOAD_COMMAND = original_reload
+            config.XRAY_PUSH_COMMAND = original_push
+            config.XRAY_CLIENT_REALITY_PUBLIC_KEY = original_public_key
+            config.XRAY_CLIENT_REALITY_SHORT_ID = original_short_id
+
 
 @unittest.skipUnless(
     SERVICE_DEPS_AVAILABLE and TestClient is not None and main is not None,
@@ -976,18 +1336,34 @@ class RoutingOverrideApiTests(unittest.TestCase):
         self.original_server_public_host = config.SERVER_PUBLIC_HOST
         self.original_wg_endpoint_host = config.WG_ENDPOINT_HOST
         self.original_xray_client_server = config.XRAY_CLIENT_SERVER
+        self.original_direct_ip_rules = config.XRAY_DIRECT_IP_RULES
+        self.original_reality_public_key = config.XRAY_CLIENT_REALITY_PUBLIC_KEY
+        self.original_reality_short_id = config.XRAY_CLIENT_REALITY_SHORT_ID
+        # Phase 1 SQLite stores: engines resolve config.*_DB_PATH lazily per call.
+        self.original_routing_db = config.ROUTING_DB_PATH
+        self.original_vless_db = config.VLESS_DB_PATH
+        self.original_awg_db = config.AWG_DB_PATH
         config.ROUTING_OVERRIDES_PATH = str(Path(self.tmpdir.name) / "routing_overrides.json")
         config.XRAY_CLIENTS_PATH = str(Path(self.tmpdir.name) / "xray_clients.json")
+        config.ROUTING_DB_PATH = str(Path(self.tmpdir.name) / "routing_rules.db")
+        config.VLESS_DB_PATH = str(Path(self.tmpdir.name) / "vless.db")
+        config.AWG_DB_PATH = str(Path(self.tmpdir.name) / "awg.db")
         config.PANEL_SECRET_TOKEN = "test-token"
         config.AWG_SETTINGS_PATH = str(Path(self.tmpdir.name) / "awg_settings.json")
         config.SERVER_PUBLIC_HOST = "vpn.example.com"
         config.WG_ENDPOINT_HOST = "vpn.example.com"
         config.XRAY_CLIENT_SERVER = "vpn.example.com"
+        config.XRAY_DIRECT_IP_RULES = ()
+        # REALITY params so share links carry pbk=/sid= (asserted below).
+        config.XRAY_CLIENT_REALITY_PUBLIC_KEY = "public-key"
+        config.XRAY_CLIENT_REALITY_SHORT_ID = "abcd1234"
+        self.original_isolation = config.NETWORK_POLICY_CLIENT_ISOLATION
+        config.NETWORK_POLICY_CLIENT_ISOLATION = False
         Path(config.AWG_SETTINGS_PATH).write_text(
             json.dumps(
                 {
                     "endpoint_host": "vpn.example.com",
-                    "endpoint_port": 34011,
+                    "endpoint_port": 51820,
                     "dns_servers": "1.1.1.1,1.0.0.1",
                     "persistent_keepalive": 25,
                     "Jc": 0,
@@ -1028,6 +1404,14 @@ class RoutingOverrideApiTests(unittest.TestCase):
         config.SERVER_PUBLIC_HOST = self.original_server_public_host
         config.WG_ENDPOINT_HOST = self.original_wg_endpoint_host
         config.XRAY_CLIENT_SERVER = self.original_xray_client_server
+        config.XRAY_DIRECT_IP_RULES = self.original_direct_ip_rules
+        config.XRAY_CLIENT_REALITY_PUBLIC_KEY = self.original_reality_public_key
+        config.XRAY_CLIENT_REALITY_SHORT_ID = self.original_reality_short_id
+        config.NETWORK_POLICY_CLIENT_ISOLATION = self.original_isolation
+        config.ROUTING_DB_PATH = self.original_routing_db
+        config.VLESS_DB_PATH = self.original_vless_db
+        config.AWG_DB_PATH = self.original_awg_db
+        db.dispose_all_engines()
         self.tmpdir.cleanup()
 
     def _auth_headers(self):
@@ -1047,8 +1431,8 @@ class RoutingOverrideApiTests(unittest.TestCase):
     def test_routing_endpoints_require_auth(self):
         cases = [
             ("get", "/api/routing/overrides", None),
-            ("post", "/api/routing/overrides", {"match_type": "exact", "value": "youtube.com", "route": "non_ru", "comment": ""}),
-            ("put", "/api/routing/overrides/missing", {"match_type": "exact", "value": "youtube.com", "route": "non_ru", "comment": ""}),
+            ("post", "/api/routing/overrides", {"match_type": "exact", "value": "youtube.com", "route": "egress", "comment": ""}),
+            ("put", "/api/routing/overrides/missing", {"match_type": "exact", "value": "youtube.com", "route": "egress", "comment": ""}),
             ("post", "/api/routing/overrides/missing/toggle", None),
             ("delete", "/api/routing/overrides/missing", None),
             ("get", "/api/routing/check?host=youtube.com", None),
@@ -1077,6 +1461,16 @@ class RoutingOverrideApiTests(unittest.TestCase):
                 response = request(url, json=payload) if payload is not None else request(url)
                 self.assertEqual(response.status_code, 401)
 
+    def test_metrics_endpoint_requires_auth_and_exports_prometheus_text(self):
+        unauthenticated = self.client.get("/metrics")
+        self.assertEqual(unauthenticated.status_code, 401)
+
+        response = self.client.get("/metrics", headers=self._auth_headers())
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/plain", response.headers["content-type"])
+        self.assertIn("vpn_panel_http_requests_total", response.text)
+        self.assertIn("vpn_panel_http_request_duration_seconds", response.text)
+
     def test_create_update_toggle_delete_and_list_flow(self):
         create_response = self.client.post(
             "/api/routing/overrides",
@@ -1084,7 +1478,7 @@ class RoutingOverrideApiTests(unittest.TestCase):
             json={
                 "match_type": "suffix",
                 "value": "YouTube.com",
-                "route": "non_ru",
+                "route": "egress",
                 "comment": "force via NL",
             },
         )
@@ -1103,7 +1497,7 @@ class RoutingOverrideApiTests(unittest.TestCase):
             json={
                 "match_type": "exact",
                 "value": "music.youtube.com",
-                "route": "non_ru",
+                "route": "egress",
                 "comment": "more specific",
             },
         )
@@ -1137,7 +1531,7 @@ class RoutingOverrideApiTests(unittest.TestCase):
         ro.create_override(
             match_type=RoutingMatchType.EXACT,
             value="gosuslugi.ru",
-            route=RoutingRoute.RU,
+            route=RoutingRoute.DIRECT,
         )
 
         response = self.client.post(
@@ -1146,7 +1540,7 @@ class RoutingOverrideApiTests(unittest.TestCase):
             json={
                 "match_type": "exact",
                 "value": "GOSUSLUGI.RU.",
-                "route": "non_ru",
+                "route": "egress",
                 "comment": "",
             },
         )
@@ -1161,12 +1555,13 @@ class RoutingOverrideApiTests(unittest.TestCase):
         self.assertEqual(
             payload["routing_order"],
             [
+                "always denied (metadata, loopback, gateway, site link) -> block",
                 "geoip:private -> direct",
-                "manual:ru overrides -> direct",
-                "manual:non_ru overrides -> to-egress",
-                "builtin:.ru/.xn--p1ai -> direct",
-                "geoip:ru -> direct",
-                "default -> to-egress",
+                "configured direct IP rules -> direct",
+                "manual:block rules -> block",
+                "manual:direct rules -> direct",
+                "manual:egress rules -> direct",
+                "default -> direct",
             ],
         )
         self.assertEqual(
@@ -1174,6 +1569,7 @@ class RoutingOverrideApiTests(unittest.TestCase):
             {
                 "domainStrategy": "IPIfNonMatch",
                 "rules": [
+                    *network_policy.xray_guard_rules(),
                     {
                         "type": "field",
                         "ip": ["geoip:private"],
@@ -1181,33 +1577,39 @@ class RoutingOverrideApiTests(unittest.TestCase):
                     },
                     {
                         "type": "field",
-                        "domain": ["domain:ru"],
-                        "outboundTag": "direct",
-                    },
-                    {
-                        "type": "field",
-                        "domain": ["domain:xn--p1ai"],
-                        "outboundTag": "direct",
-                    },
-                    {
-                        "type": "field",
-                        "ip": ["geoip:ru"],
-                        "outboundTag": "direct",
-                    },
-                    {
-                        "type": "field",
                         "network": "tcp,udp",
-                        "outboundTag": "to-egress",
+                        "outboundTag": "direct",
                     },
                 ],
             },
+        )
+
+    def test_configured_direct_ip_rules_are_rendered_after_private_ranges(self):
+        config.XRAY_DIRECT_IP_RULES = ("203.0.113.7/32", "203.0.113.7", "2001:db8::/32")
+
+        preview = ro.get_preview()
+
+        self.assertEqual(
+            preview.rendered_routing["rules"][1:3],
+            [
+                {
+                    "type": "field",
+                    "ip": ["geoip:private"],
+                    "outboundTag": "direct",
+                },
+                {
+                    "type": "field",
+                    "ip": ["203.0.113.7/32", "2001:db8::/32"],
+                    "outboundTag": "direct",
+                },
+            ],
         )
 
     def test_routing_check_endpoint_reports_manual_match_and_fallback(self):
         ro.create_override(
             match_type=RoutingMatchType.SUFFIX,
             value="gosuslugi.ru",
-            route=RoutingRoute.RU,
+            route=RoutingRoute.DIRECT,
         )
 
         match_response = self.client.get(
@@ -1217,7 +1619,7 @@ class RoutingOverrideApiTests(unittest.TestCase):
         self.assertEqual(match_response.status_code, 200)
         matched = match_response.json()
         self.assertTrue(matched["matched"])
-        self.assertEqual(matched["route"], "ru")
+        self.assertEqual(matched["route"], "direct")
         self.assertEqual(matched["outbound"], "direct")
         self.assertEqual(matched["rendered_rule"], "domain:gosuslugi.ru -> direct")
 
@@ -1230,15 +1632,12 @@ class RoutingOverrideApiTests(unittest.TestCase):
         self.assertFalse(fallback["matched"])
         self.assertEqual(fallback["source"], "fallback")
 
-        builtin_response = self.client.get(
+        zone_response = self.client.get(
             "/api/routing/check?host=ozon.ru",
             headers=self._auth_headers(),
         )
-        self.assertEqual(builtin_response.status_code, 200)
-        builtin = builtin_response.json()
-        self.assertTrue(builtin["matched"])
-        self.assertEqual(builtin["source"], "builtin_ru_zone")
-        self.assertEqual(builtin["outbound"], "direct")
+        self.assertEqual(zone_response.status_code, 200)
+        self.assertEqual(zone_response.json()["source"], "fallback")
 
         invalid_response = self.client.get(
             "/api/routing/check?host=https://example.org",
@@ -1274,7 +1673,7 @@ class RoutingOverrideApiTests(unittest.TestCase):
         self.assertIn("reality_public_key_configured", payload)
         self.assertIn("reality_short_id_configured", payload)
 
-    def test_xray_doctor_endpoint_reports_readiness(self):
+    def AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8(self):
         response = self.client.get("/api/xray/doctor", headers=self._auth_headers())
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -1284,23 +1683,23 @@ class RoutingOverrideApiTests(unittest.TestCase):
         self.assertIn("runtime", payload)
 
     def test_preview_endpoint_orders_only_enabled_rules(self):
-        ru_rule = ro.create_override(
+        direct_rule = ro.create_override(
             match_type=RoutingMatchType.SUFFIX,
             value="yandex.ru",
-            route=RoutingRoute.RU,
+            route=RoutingRoute.DIRECT,
         )
         ro.create_override(
             match_type=RoutingMatchType.EXACT,
             value="passport.yandex.ru",
-            route=RoutingRoute.RU,
+            route=RoutingRoute.DIRECT,
         )
-        non_ru_rule = ro.create_override(
+        egress_rule_rule = ro.create_override(
             match_type=RoutingMatchType.EXACT,
             value="youtube.com",
-            route=RoutingRoute.NON_RU,
+            route=RoutingRoute.EGRESS,
         )
-        ro.toggle_override(ru_rule.id)
-        ro.toggle_override(non_ru_rule.id)
+        ro.toggle_override(direct_rule.id)
+        ro.toggle_override(egress_rule_rule.id)
 
         response = self.client.get("/api/routing/preview", headers=self._auth_headers())
         self.assertEqual(response.status_code, 200)
@@ -1362,14 +1761,9 @@ class RoutingOverrideApiTests(unittest.TestCase):
         self.assertEqual(downloaded_config["inbounds"][0]["protocol"], "socks")
         self.assertEqual(downloaded_config["outbounds"][0]["protocol"], "vless")
         self.assertIn("pbk=public-key", share_response.json()["share_link"])
-        self.assertEqual(
-            downloaded_config["outbounds"][0]["streamSettings"]["realitySettings"]["password"],
-            "public-key",
-        )
-        self.assertNotIn(
-            "publicKey",
-            downloaded_config["outbounds"][0]["streamSettings"]["realitySettings"],
-        )
+        reality_settings = downloaded_config["outbounds"][0]["streamSettings"]["realitySettings"]
+        self.assertEqual(reality_settings["password"], "public-key")
+        self.assertEqual(reality_settings["publicKey"], "public-key")
         self.assertEqual(downloaded_config["routing"]["rules"][1]["outboundTag"], "proxy")
 
         bundle_response = self.client.get(
@@ -1381,21 +1775,13 @@ class RoutingOverrideApiTests(unittest.TestCase):
             names = set(archive.namelist())
             self.assertIn("vless-link.txt", names)
             self.assertIn("Kate-Laptop.xray-client.json", names)
-            self.assertIn("xray-share.json", names)
-            self.assertIn("xray-doctor.json", names)
-            self.assertIn("routing-preview.json", names)
-            self.assertIn("manual-check-windows.md", names)
-            self.assertIn("README.txt", names)
+            self.assertEqual(names, {"vless-link.txt", "Kate-Laptop.xray-client.json", "README.txt"})
 
             self.assertIn("vless://", archive.read("vless-link.txt").decode("utf-8"))
             bundled_config = json.loads(
                 archive.read("Kate-Laptop.xray-client.json").decode("utf-8")
             )
             self.assertEqual(bundled_config["outbounds"][0]["protocol"], "vless")
-            doctor = json.loads(archive.read("xray-doctor.json").decode("utf-8"))
-            self.assertIn("checks", doctor)
-            checklist = archive.read("manual-check-windows.md").decode("utf-8")
-            self.assertIn("Проверка VPN вручную на Windows", checklist)
 
         unsupported_protocol = self.client.get(
             f"/api/xray/clients/{created['id']}/share?protocol=amneziawg",
@@ -1444,7 +1830,7 @@ class RoutingOverrideApiTests(unittest.TestCase):
             "Jc = 0\n\n"
             "[Peer]\n"
             "PublicKey = server-key\n"
-            "Endpoint = vpn.example.com:34011\n"
+            "Endpoint = vpn.example.com:51820\n"
             "AllowedIPs = 0.0.0.0/0\n"
         )
 
@@ -1497,7 +1883,7 @@ class RoutingOverrideApiTests(unittest.TestCase):
                 headers=self._auth_headers(),
             )
             self.assertEqual(awg_response.status_code, 200)
-            self.assertIn("Endpoint = vpn.example.com:34011", awg_response.text)
+            self.assertIn("Endpoint = vpn.example.com:51820", awg_response.text)
             self.assertIn("Jc = 0", awg_response.text)
 
     def test_xray_client_api_rolls_back_store_when_apply_fails(self):

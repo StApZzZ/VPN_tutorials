@@ -1,0 +1,93 @@
+---
+# Firewall managers and Docker next to the CorpVPN interfaces. CorpVPN never
+# flushes the ruleset; these checks tell the operator when the host's own setup
+# would drop or wipe VPN traffic.
+#
+# Inputs: corpvpn_detect_ifaces, corpvpn_detect_udp_ports, corpvpn_detect_tcp_ports.
+- name: Firewall | Services that could interfere # noqa: command-instead-of-module - read-only diagnostics need exact output
+  ansible.builtin.command: systemctl is-active firewalld docker
+  register: corpvpn_fw_units
+  changed_when: false
+  failed_when: false
+
+# `systemctl is-active ufw` reports "active" on every stock Ubuntu (the oneshot
+# unit succeeds even when ufw is disabled); `ufw status` tells the truth.
+- name: Firewall | Is ufw enabled?
+  ansible.builtin.command: ufw status
+  register: corpvpn_ufw_status
+  changed_when: false
+  failed_when: false
+
+- name: Firewall | Read the system nftables.conf
+  ansible.builtin.slurp:
+    src: /etc/nftables.conf
+  register: corpvpn_nftables_conf
+  failed_when: false
+
+- name: Firewall | Detect the iptables backend
+  ansible.builtin.command: iptables -V
+  register: corpvpn_iptables_version
+  changed_when: false
+  failed_when: false
+
+- name: Firewall | Summarise
+  ansible.builtin.set_fact:
+    corpvpn_firewalld_active: "{{ (corpvpn_fw_units.stdout_lines | default([]))[0] | default('') == 'active' }}"
+    corpvpn_docker_active: "{{ (corpvpn_fw_units.stdout_lines | default([]))[1] | default('') == 'active' }}"
+    corpvpn_ufw_active: "{{ corpvpn_ufw_status.stdout | default('') is search('(?m)^Status: active') }}"
+    corpvpn_nftables_flushes: >-
+      {{ 'content' in corpvpn_nftables_conf
+         and ((corpvpn_nftables_conf.content | b64decode) is search('(?m)^\\s*flush\\s+ruleset')) }}
+    corpvpn_iptables_legacy: "{{ corpvpn_iptables_version.stdout | default('') is search('legacy') }}"
+    corpvpn_ufw_rules: >-
+      {{ (corpvpn_detect_udp_ports | default([])) | map('regex_replace', '^(.*)$', 'allow \\1/udp') | list
+         + (corpvpn_detect_tcp_ports | default([])) | map('regex_replace', '^(.*)$', 'allow \\1/tcp') | list
+         + (corpvpn_detect_ifaces | default([])) | map('regex_replace', '^(.*)$', 'route allow in on \\1') | list }}
+    corpvpn_firewalld_rules: >-
+      {{ (corpvpn_detect_ifaces | default([])) | map('regex_replace', '^(.*)$', '--permanent --zone=trusted --add-interface=\\1') | list
+         + (corpvpn_detect_udp_ports | default([])) | map('regex_replace', '^(.*)$', '--permanent --add-port=\\1/udp') | list
+         + (corpvpn_detect_tcp_ports | default([])) | map('regex_replace', '^(.*)$', '--permanent --add-port=\\1/tcp') | list
+         + ['--reload'] }}
+
+- name: Firewall | Collect findings
+  ansible.builtin.set_fact:
+    corpvpn_fw_conflicts: >-
+      {{ ([] if not corpvpn_ufw_active else
+          ['ufw is enabled and drops VPN traffic by default. Allow it: ufw '
+           ~ corpvpn_ufw_rules | join(' && ufw ')
+           ~ ' (or set vpn_panel_firewall_conflict_action / FIREWALL_ACTION to manage).'])
+       + ([] if not corpvpn_firewalld_active else
+          ['firewalld is active and drops VPN traffic by default. Allow it: firewall-cmd '
+           ~ corpvpn_firewalld_rules | join(' && firewall-cmd ')]) }}
+    corpvpn_fw_notes: >-
+      {{ ([] if not corpvpn_nftables_flushes else
+          ['/etc/nftables.conf starts with `flush ruleset`: (re)starting nftables.service wipes every '
+           ~ 'table, Docker''s and CorpVPN''s included. CorpVPN reloads its tables when nftables.service '
+           ~ 'starts and the health check restores them, but prefer a config without the flush.'])
+       + ([] if not corpvpn_iptables_legacy else
+          ['iptables uses the legacy backend: its rules and the nftables tables both apply; that works, '
+           ~ 'but `nft list ruleset` will not show the iptables part.']) }}
+
+- name: Firewall | Findings
+  ansible.builtin.debug:
+    msg: "{{ corpvpn_fw_conflicts + corpvpn_fw_notes }}"
+  when: (corpvpn_fw_conflicts + corpvpn_fw_notes) | length > 0
+
+- name: Firewall | Open the CorpVPN ports in ufw (manage)
+  ansible.builtin.command: "ufw {{ item }}"
+  loop: "{{ corpvpn_ufw_rules }}"
+  register: corpvpn_ufw_added
+  changed_when: corpvpn_ufw_added.stdout is search('(?i)rule(s)? (added|updated)')
+  when:
+    - corpvpn_ufw_active
+    - (vpn_panel_firewall_conflict_action | default('fail')) == 'manage'
+
+- name: Firewall | Stop on a firewall that is not handled
+  ansible.builtin.fail:
+    msg: >-
+      An active firewall would drop VPN traffic (see above). Add the rules, or set
+      vpn_panel_firewall_conflict_action (quickstart FIREWALL_ACTION) to manage (ufw) or warn.
+  when:
+    - corpvpn_fw_conflicts | length > 0
+    - (vpn_panel_firewall_conflict_action | default('fail')) == 'fail' or ((vpn_panel_firewall_conflict_action | default('fail')) == 'manage' and
+      corpvpn_firewalld_active)

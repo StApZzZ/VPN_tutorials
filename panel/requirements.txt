@@ -1,0 +1,22 @@
+# Panel runtime dependencies: the human-edited list of direct dependencies.
+# Hosts install requirements.lock (every transitive package pinned, with hashes,
+# resolved for Python 3.10-3.13). Regenerate it after any change here:
+#   uv pip compile --universal --python-version 3.10 --generate-hashes \
+#       panel/requirements.txt -o panel/requirements.lock
+fastapi==0.141.1
+# Patched Host/path, form limits and endpoint dispatch behavior.
+starlette==1.7.0
+uvicorn[standard]==0.54.0
+jinja2==3.1.6
+python-multipart==0.0.32
+qrcode[pil]==8.2
+python-dotenv==1.2.3
+pydantic==2.13.5
+httpx==0.28.1
+prometheus-client==0.26.0
+# 2.0.x: the 2.1 line needs Python 3.11, and one version on every host is easier
+# to support than a split.
+sqlalchemy==2.0.54
+cryptography==50.0.2
+PyJWT==2.15.1
+ldap3==2.9.1

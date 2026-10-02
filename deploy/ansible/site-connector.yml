@@ -1,0 +1,10 @@
+---
+- name: CorpVPN site link (gateway <-> site connector)
+  hosts: "{{ (groups['management'] | default([])) + (groups['site_connector'] | default([])) }}"
+  become: true
+  gather_facts: true
+  roles:
+    - preflight
+    - site_connector
+  vars_files:
+    - ../versions.yml

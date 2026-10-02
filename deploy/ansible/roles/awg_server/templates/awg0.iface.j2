@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# [Interface] block of {{ awg_server_iface }} (without the key). awg-peer-sync builds
+# {{ awg_server_iface }}.conf from this block, the key file and the {{ awg_server_wg_iface }} peers.
+[Interface]
+Address = {{ awg_server_address }}
+ListenPort = {{ awg_server_port }}
+MTU = {{ awg_server_mtu }}
+{% for k in ['Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'H1', 'H2', 'H3', 'H4'] %}
+{{ k }} = {{ awg_server_obfuscation_effective[k] }}
+{% endfor %}

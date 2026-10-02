@@ -1,0 +1,74 @@
+{#
+  Seed of the Xray config (vpn_panel_xray_base_config_path). corpvpn-xray render
+  merges it with the live file: the VLESS inbound's address and REALITY settings
+  and the outbounds below come from here; the clients, the routing, any other
+  section and the REALITY key and short IDs are kept from the live file (the
+  panel owns them after its first apply). The empty privateKey / shortIds are
+  filled on the host: a key generated there, or the one already in use.
+
+  nginx shares TCP 443 and passes the REALITY server name to this inbound on
+  loopback, with the client address in a PROXY protocol header.
+#}
+{
+  "log": {
+    "loglevel": "warning",
+    "access": "none"
+  },
+  "inbounds": [
+    {
+      "tag": {{ vpn_panel_xray_client_inbound_tag | to_json }},
+      "listen": {{ vpn_panel_xray_listen | to_json }},
+      "port": {{ vpn_panel_xray_port | int }},
+      "protocol": "vless",
+      "settings": {
+        "clients": [],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": {{ vpn_panel_xray_reality_dest | to_json }},
+          "xver": 0,
+          "serverNames": [
+            {{ vpn_panel_xray_client_reality_server_name | to_json }}
+          ],
+          "privateKey": "",
+          "shortIds": []
+        },
+        "sockopt": {
+          "acceptProxyProtocol": true
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "routeOnly": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": {{ vpn_panel_xray_direct_domain_strategy | to_json }}
+      }
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    }{% for outbound in vpn_panel_xray_egress_outbounds %},
+    {{ outbound | to_json }}{% endfor %}
+
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": []
+  }
+}

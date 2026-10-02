@@ -1,0 +1,30 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+# Xray opens VLESS users' connections from the gateway itself, so without this
+# they could reach the gateway's own local services (the panel, Xray's stats) and
+# the cloud metadata service. New connections of the {{ xray_user }} account to loopback
+# (DNS excepted), link-local and the always-denied ranges are refused. Loaded by
+# corpvpn-nat.service; own table, replaced atomically.
+table inet corpvpn_xray
+delete table inet corpvpn_xray
+table inet corpvpn_xray {
+    set deny_v4 {
+        type ipv4_addr
+        flags interval
+        auto-merge
+        elements = { {{ xray_guard_deny_v4 | join(', ') }} }
+    }
+
+    chain output {
+        type filter hook output priority filter - 10; policy accept;
+        meta skuid {{ xray_account_uid }} jump xray_out
+    }
+
+    chain xray_out {
+        ct state established,related accept
+        ip daddr 127.0.0.0/8 meta l4proto { tcp, udp } th dport 53 accept
+        ip6 daddr ::1 meta l4proto { tcp, udp } th dport 53 accept
+        ip daddr @deny_v4 counter reject
+        ip6 daddr { ::1, fe80::/10 } counter reject
+    }
+}

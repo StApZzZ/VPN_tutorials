@@ -1,0 +1,10 @@
+---
+- name: App | reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: App | restart panel
+  ansible.builtin.systemd:
+    name: vpn-panel.service
+    state: restarted
+  when: vpn_panel_panel_enabled | bool

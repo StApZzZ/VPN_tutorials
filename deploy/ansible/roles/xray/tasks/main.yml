@@ -1,0 +1,8 @@
+---
+- name: Xray | Enabled
+  ansible.builtin.import_tasks: enabled.yml
+  when: "'vless' in vpn_panel_enabled_protocols"
+
+- name: Xray | Switched off
+  ansible.builtin.import_tasks: disabled.yml
+  when: "'vless' not in vpn_panel_enabled_protocols"

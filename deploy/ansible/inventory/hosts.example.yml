@@ -1,0 +1,10 @@
+# Copy to inventory/hosts.yml (gitignored). deploy/run.sh passes the host on the
+# command line instead, so this file is only needed for direct ansible-playbook runs.
+all:
+  children:
+    management:
+      hosts:
+        vpn-gateway:
+          ansible_host: 203.0.113.10
+          ansible_user: root
+          ansible_ssh_private_key_file: ~/.ssh/id_ed25519

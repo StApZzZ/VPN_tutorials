@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Run the CorpVPN health check every {{ vpn_panel_healthcheck_interval }}
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec={{ vpn_panel_healthcheck_interval }}
+
+[Install]
+WantedBy=timers.target

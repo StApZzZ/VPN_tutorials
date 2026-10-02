@@ -1,0 +1,27 @@
+---
+# Daily backup of the gateway's keys, configs and panel databases
+# (/usr/local/sbin/corpvpn-backup, run by corpvpn-backup.timer). Restore with
+# deploy/ansible/restore.yml.
+vpn_panel_backup_archive_dir: "{{ vpn_panel_backup_dir }}/daily"
+vpn_panel_backup_time: "03:30"
+# Archives kept on the host (one per day).
+vpn_panel_backup_keep: 14
+# Per-change copies the panel saves before each edit are pruned after this many days.
+vpn_panel_backup_change_retention_days: 30
+# Encrypt archives to these age recipients ("age1..." or SSH public keys). Empty:
+# archives are plain tar.gz, readable by root only. The archives hold every
+# client's private key: encrypt them before they leave the host.
+vpn_panel_backup_age_recipients: []
+# Command that copies each new archive off the host; {archive} is replaced by its
+# path. Examples:
+#   rclone copy {archive} backup-remote:corpvpn/
+#   scp -q {archive} backup@backup.example.com:/srv/corpvpn/
+vpn_panel_backup_offhost_command: ""
+vpn_panel_backup_paths:
+  - /etc/wireguard
+  - /etc/amnezia/amneziawg
+  - "{{ vpn_panel_xray_config_dir }}"
+  - "{{ vpn_panel_config_dir }}"
+  - "{{ vpn_panel_app_dir }}/.env"
+  - /etc/letsencrypt
+  - "{{ vpn_panel_nft_policy_path }}"

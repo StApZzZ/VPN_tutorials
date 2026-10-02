@@ -1,0 +1,1 @@
+{% extends "base.html" %}{% block page %}portal{% endblock %}{% block content %}<main class="content portal"><h1>{{ _('My devices') }}</h1><p>{{ principal.display_name or principal.username }}</p><div id="page-actions" class="toolbar"></div><section id="view" aria-live="polite"></section></main>{% endblock %}

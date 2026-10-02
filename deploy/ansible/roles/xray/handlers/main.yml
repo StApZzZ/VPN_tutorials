@@ -1,0 +1,9 @@
+---
+- name: Xray | reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Xray | restart
+  ansible.builtin.systemd:
+    name: xray.service
+    state: restarted

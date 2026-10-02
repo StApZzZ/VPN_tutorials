@@ -1,0 +1,23 @@
+# {{ ansible_managed }}
+# Loads NAT / MSS clamping (table inet corpvpn_nat), the client baseline (table
+# inet corpvpn_guard) and, with vless, the limits on Xray's own connections
+# (table inet corpvpn_xray) before the tunnels, and switches forwarding on
+# whatever a later sysctl file says.
+#
+# Not RemainAfterExit: nftables.service wants this unit, so every start or
+# restart of nftables (whose stock config begins with `flush ruleset`) loads the
+# tables again right after it.
+[Unit]
+Description=CorpVPN: NAT, MSS clamp and client baseline (nft tables corpvpn_nat, corpvpn_guard)
+After=nftables.service
+Before=wg-quick@{{ wg_server_iface }}.service awg-quick@{{ vpn_panel_awg_interface }}.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/sbin/sysctl -q -w net.ipv4.ip_forward=1
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/40-corpvpn-nat.nft
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/41-corpvpn-guard.nft
+ExecStart=/bin/sh -c 'if [ -e /etc/nftables.d/45-corpvpn-xray.nft ]; then exec /usr/sbin/nft -f /etc/nftables.d/45-corpvpn-xray.nft; fi'
+
+[Install]
+WantedBy=multi-user.target nftables.service

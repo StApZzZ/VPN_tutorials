@@ -1,0 +1,191 @@
+---
+- name: WireGuard | Install tools
+  ansible.builtin.apt:
+    name:
+      - wireguard-tools
+      - nftables
+    state: present
+    lock_timeout: 600
+    policy_rc_d: 101
+
+- name: WireGuard | Config directory
+  ansible.builtin.file:
+    path: /etc/wireguard
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# An existing wg0.conf (e.g. a hand-built server, a restored backup) is left
+# exactly as it is: it holds the live peers and the server key every client
+# config trusts.
+- name: WireGuard | Check for an existing server config
+  ansible.builtin.stat:
+    path: "{{ wg_server_conf }}"
+  register: wg_server_conf_stat
+
+- name: WireGuard | Generate the server key (fresh host only)
+  ansible.builtin.shell: umask 077 && wg genkey > /etc/wireguard/{{ wg_server_iface }}_private.key
+  args:
+    creates: /etc/wireguard/{{ wg_server_iface }}_private.key
+  when: not wg_server_conf_stat.stat.exists
+
+- name: WireGuard | Read the new server key
+  ansible.builtin.slurp:
+    src: /etc/wireguard/{{ wg_server_iface }}_private.key
+  register: wg_server_new_key
+  no_log: true
+  when: not wg_server_conf_stat.stat.exists
+
+- name: WireGuard | Write the initial server config (never overwritten)
+  ansible.builtin.template:
+    src: wg0.conf.j2
+    dest: "{{ wg_server_conf }}"
+    owner: root
+    group: root
+    mode: "0600"
+    force: false
+  no_log: true
+  when: not wg_server_conf_stat.stat.exists
+
+- name: WireGuard | Read the existing server config
+  ansible.builtin.slurp:
+    src: "{{ wg_server_conf }}"
+  register: wg_server_conf_raw
+  no_log: true
+  when: wg_server_conf_stat.stat.exists
+
+# Client configs are built from the settings, so they must describe the live
+# interface. Values are split on the first '=' only (a base64 key ends in '=').
+- name: WireGuard | The existing config matches the settings
+  ansible.builtin.assert:
+    that:
+      - wg_server_live_port == wg_server_port | string
+      - (wg_server_ip ~ '/' ~ (wg_server_network | corpvpn_prefixlen)) in wg_server_live_addresses
+    fail_msg: >-
+      {{ wg_server_conf }} listens on port {{ wg_server_live_port or '(none)' }} with address
+      {{ wg_server_live_addresses | join(', ') or '(none)' }}, but the settings say port
+      {{ wg_server_port }} and {{ wg_server_ip }}/{{ wg_server_network | corpvpn_prefixlen }} in
+      {{ wg_server_network }}. Issued client configs depend on the live values: set
+      vpn_panel_wg_port, vpn_panel_wg_network and vpn_panel_wg_server_ip (quickstart: WG_PORT,
+      WG_NETWORK) to them.
+    quiet: true
+  vars:
+    wg_server_text: "{{ wg_server_conf_raw.content | b64decode }}"
+    wg_server_live_port: >-
+      {{ wg_server_text | regex_findall('(?m)^ *ListenPort *= *([0-9]+)') | default([''], true) | first }}
+    wg_server_live_addresses: >-
+      {{ (wg_server_text | regex_findall('(?m)^ *Address *= *([^#\n]+)') | default([''], true) | first)
+         | split(',') | map('trim') | list }}
+  when: wg_server_conf_stat.stat.exists
+
+- name: WireGuard | Derive the public key the panel hands to clients
+  ansible.builtin.shell: |
+    set -o pipefail
+    sed -n '/^[[:space:]]*PrivateKey[[:space:]]*=/{s/^[^=]*=[[:space:]]*//;s/[[:space:]]*$//;p;q;}' {{ wg_server_conf }} | wg pubkey
+  args:
+    executable: /bin/bash
+  register: wg_server_pubkey
+  changed_when: false
+  tags: [always]
+
+- name: WireGuard | Public key file
+  ansible.builtin.copy:
+    dest: "{{ wg_server_public_key_path }}"
+    content: "{{ wg_server_pubkey.stdout | trim }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+# --- nftables: NAT / MSS clamp and the client baseline, loaded before wg0 -------------
+- name: WireGuard | NAT and MSS clamp for VPN clients
+  ansible.builtin.template:
+    src: corpvpn-nat.nft.j2
+    dest: /etc/nftables.d/40-corpvpn-nat.nft
+    owner: root
+    group: root
+    mode: "0644"
+  notify: WireGuard | load the nft tables
+
+- name: WireGuard | Client baseline (cloud metadata, client isolation)
+  ansible.builtin.template:
+    src: corpvpn-guard.nft.j2
+    dest: /etc/nftables.d/41-corpvpn-guard.nft
+    owner: root
+    group: root
+    mode: "0644"
+  notify: WireGuard | load the nft tables
+
+- name: WireGuard | Unit that loads the tables at boot
+  ansible.builtin.template:
+    src: corpvpn-nat.service.j2
+    dest: /etc/systemd/system/corpvpn-nat.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - WireGuard | reload systemd
+    - WireGuard | load the nft tables
+
+- name: "WireGuard | Wait for CorpVPN tables: {{ wg_server_iface }}"
+  ansible.builtin.include_tasks: tunnel_dropin.yml
+  vars:
+    wg_server_dropin_unit: "wg-quick@{{ wg_server_iface }}.service"
+
+- name: WireGuard | Enable the table loader
+  ansible.builtin.systemd:
+    name: corpvpn-nat.service
+    enabled: true
+
+# Missing tables (first run, or wiped by a `flush ruleset`) are loaded by the
+# handler below, before wg0 is started.
+- name: WireGuard | Are the tables loaded?
+  ansible.builtin.shell: nft list table inet corpvpn_nat >/dev/null && nft list table inet corpvpn_guard >/dev/null
+  register: wg_server_tables
+  changed_when: wg_server_tables.rc != 0
+  failed_when: false
+  notify: WireGuard | load the nft tables
+
+- name: WireGuard | Apply pending unit and table changes
+  ansible.builtin.meta: flush_handlers
+
+# --- wg0 -------------------------------------------------------------------------------
+- name: "WireGuard | Check interface status: {{ wg_server_iface }}"
+  ansible.builtin.command: ip link show {{ wg_server_iface }}
+  register: wg_server_iface_present
+  failed_when: false
+  changed_when: false
+
+- name: WireGuard | Enable wg-quick@{{ wg_server_iface }}
+  ansible.builtin.systemd:
+    name: wg-quick@{{ wg_server_iface }}
+    enabled: true
+
+# Never restart a running wg0: that drops every live session. no_block: the unit
+# wants network-online.target, and on hosts where that target timed out at boot
+# (an unconfigured interface) systemd waits for it again; the smoke role checks
+# that wg0 came up.
+- name: WireGuard | Start wg-quick@{{ wg_server_iface }}
+  ansible.builtin.systemd:
+    name: wg-quick@{{ wg_server_iface }}
+    state: started
+    no_block: true
+  when: wg_server_iface_present.rc != 0
+
+# --- split mode switched off --------------------------------------------------------------
+- name: WireGuard | Look for a site link from an earlier split-mode deploy # noqa: command-instead-of-module - read-only diagnostics need exact output
+  ansible.builtin.command: systemctl is-enabled wg-quick@{{ vpn_panel_site_link_iface }}
+  register: wg_server_site_link
+  changed_when: false
+  failed_when: false
+  when: not (vpn_panel_split_mode | bool)
+
+# Keys stay in /etc/wireguard, so enabling split mode again restores the link.
+- name: WireGuard | Split mode is off - stop the site link
+  ansible.builtin.systemd:
+    name: wg-quick@{{ vpn_panel_site_link_iface }}
+    state: stopped
+    enabled: false
+  when:
+    - not (vpn_panel_split_mode | bool)
+    - wg_server_site_link.stdout | default('') | trim == 'enabled'

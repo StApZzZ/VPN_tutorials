@@ -1,58 +1,120 @@
-- name: Smoke | Compile Python sources
-  ansible.builtin.command: "{{ vpn_panel_venv_dir }}/bin/python -m py_compile {{ vpn_panel_app_dir }}/{{ item }}"
-  loop: "{{ vpn_panel_app_source_files | select('match', '.*\\.py$') | list }}"
+---
+# End-of-run checks: each one covers a way a gateway can look deployed while
+# clients cannot connect.
+
+- name: Smoke | Panel sources parse (one pass, no .pyc written)
+  ansible.builtin.command:
+    argv:
+      - "{{ vpn_panel_venv_dir }}/bin/python"
+      - -c
+      - |
+        import ast, pathlib, sys
+        root = pathlib.Path(sys.argv[1])
+        for path in sorted(root.rglob("*.py")):
+            if ".venv" not in path.relative_to(root).parts:
+                ast.parse(path.read_bytes(), str(path))
+      - "{{ vpn_panel_app_dir }}"
   changed_when: false
 
-- name: Smoke | Check panel service state
-  ansible.builtin.command: systemctl show vpn-panel.service -p ActiveState -p SubState -p Result -p NRestarts
-  register: vpn_panel_service_state
+- name: Smoke | Panel service state # noqa: command-instead-of-module - read-only diagnostics need exact output
+  ansible.builtin.command: systemctl show vpn-panel.service -p ActiveState -p SubState
+  register: smoke_panel_state
   changed_when: false
+  retries: 5
+  delay: 2
+  until: "'ActiveState=active' in smoke_panel_state.stdout and 'SubState=running' in smoke_panel_state.stdout"
   when: vpn_panel_panel_enabled | bool
 
-- name: Smoke | Assert panel service is running
-  ansible.builtin.assert:
-    that:
-      - "'ActiveState=active' in vpn_panel_service_state.stdout"
-      - "'SubState=running' in vpn_panel_service_state.stdout"
-  when: vpn_panel_panel_enabled | bool
-
-- name: Smoke | Check panel health endpoint
+- name: Smoke | Panel health endpoint
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ vpn_panel_panel_port }}/health"
+    url: "http://{{ vpn_panel_panel_host }}:{{ vpn_panel_panel_port }}/health"
     return_content: true
-  register: vpn_panel_health
+  register: smoke_health
+  retries: 10
+  delay: 3
+  until: smoke_health.status == 200
   when: vpn_panel_panel_enabled | bool
 
-- name: Smoke | Assert panel health endpoint is healthy
+- name: Smoke | Panel health is ok
   ansible.builtin.assert:
-    that:
-      - vpn_panel_health.status == 200
-      - "'\"status\":\"ok\"' in (vpn_panel_health.content | regex_replace('\\s+', ''))"
+    that: (smoke_health.content | from_json).status == 'ok'
+    fail_msg: "/health: {{ smoke_health.content }}"
+    quiet: true
   when: vpn_panel_panel_enabled | bool
 
-- name: Smoke | Check Telegram bot service state
-  ansible.builtin.command: systemctl show vpn-panel-telegram-bot.service -p ActiveState -p SubState -p Result -p NRestarts
-  register: vpn_panel_bot_service_state
+# The tunnel units start without blocking the run (they may wait for
+# network-online.target); give them time here.
+- name: Smoke | VPN interfaces are up
+  ansible.builtin.command: ip link show {{ item }}
+  loop: "{{ smoke_tunnels | map(attribute='iface') | list }}"
+  register: smoke_iface
   changed_when: false
-  when: vpn_panel_bot_enabled | bool
+  retries: 60
+  delay: 3
+  until: smoke_iface.rc == 0
 
-- name: Smoke | Check panel health from Telegram bot host
-  ansible.builtin.uri:
-    url: "{{ vpn_panel_telegram_panel_base_url }}/health"
-    return_content: true
-  register: vpn_panel_bot_panel_health
-  when: vpn_panel_bot_enabled | bool
+- name: Smoke | VPN interfaces listen on their UDP ports
+  ansible.builtin.shell: set -o pipefail; ss -Hlun 'sport = :{{ item.port }}' | grep -q .
+  loop: "{{ smoke_tunnels }}"
+  args:
+    executable: /bin/bash
+  changed_when: false
 
-- name: Smoke | Assert Telegram bot service is running
-  ansible.builtin.assert:
-    that:
-      - "'ActiveState=active' in vpn_panel_bot_service_state.stdout"
-      - "'SubState=running' in vpn_panel_bot_service_state.stdout"
-  when: vpn_panel_bot_enabled | bool
+- name: Smoke | Forwarding is on
+  ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+  register: smoke_forward
+  changed_when: false
+  failed_when: smoke_forward.stdout | trim != '1'
 
-- name: Smoke | Assert panel is reachable from Telegram bot host
-  ansible.builtin.assert:
-    that:
-      - vpn_panel_bot_panel_health.status == 200
-      - "'\"status\":\"ok\"' in (vpn_panel_bot_panel_health.content | regex_replace('\\s+', ''))"
-  when: vpn_panel_bot_enabled | bool
+- name: Smoke | CorpVPN nft tables are loaded
+  ansible.builtin.command: nft list table inet {{ item }}
+  loop: >-
+    {{ ['corpvpn_nat', 'corpvpn_guard']
+       + (['corpvpn_policy'] if vpn_panel_network_policy_mode == 'enforce' else [])
+       + (['corpvpn_xray'] if 'vless' in vpn_panel_enabled_protocols and vpn_panel_xray_egress_guard | default(true) | bool else []) }}
+  register: smoke_tables
+  changed_when: false
+  retries: 5
+  delay: 3
+  until: smoke_tables.rc == 0
+
+- name: Smoke | Running awg0 uses the obfuscation on file
+  ansible.builtin.command: /usr/local/sbin/awg-peer-sync --check-obfuscation {{ awg_server_conf_dir }}/obfuscation.json
+  changed_when: false
+  when: "'awg' in vpn_panel_enabled_protocols"
+
+- name: Smoke | Panel through nginx
+  ansible.builtin.command: >-
+    {{ 'curl -sSf -o /dev/null -H "Host: ' ~ nginx_server_name ~ '" http://127.0.0.1/health'
+       if vpn_panel_tls_mode == 'none' else
+       ('curl -sSkf -o /dev/null --resolve ' ~ nginx_server_name ~ ':443:127.0.0.1 https://' ~ nginx_server_name ~ '/health'
+        if nginx_server_name != '_' else 'curl -sSkf -o /dev/null https://127.0.0.1/health') }}
+  changed_when: false
+  when: vpn_panel_nginx_enabled | bool
+
+- name: Smoke | Xray runs and listens # noqa: command-instead-of-module - read-only diagnostics need exact output
+  ansible.builtin.shell: >-
+    set -o pipefail; systemctl is-active --quiet xray.service
+    && ss -Hltn 'sport = :{{ vpn_panel_xray_port }}' | grep -q .
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: "'vless' in vpn_panel_enabled_protocols"
+
+# A normal TLS client with the REALITY server name must be handed over to the
+# real site (valid certificate): proves nginx routes the name to Xray, Xray reads
+# the PROXY header, and the site is reachable from the gateway.
+- name: Smoke | TCP 443 hands the REALITY server name to Xray # noqa: command-instead-of-module - read-only diagnostics need exact output
+  ansible.builtin.command: >-
+    curl -sS -o /dev/null --max-time 20
+    --resolve {{ vpn_panel_xray_client_reality_server_name }}:443:127.0.0.1
+    https://{{ vpn_panel_xray_client_reality_server_name }}/
+  changed_when: false
+  when: "'vless' in vpn_panel_enabled_protocols"
+
+- name: Smoke | The panel hands out the server's REALITY key
+  ansible.builtin.command: >-
+    /usr/local/sbin/corpvpn-xray check --config {{ vpn_panel_xray_base_config_path }}
+    --env {{ vpn_panel_app_dir }}/.env --tag {{ vpn_panel_xray_client_inbound_tag }}
+  changed_when: false
+  when: "'vless' in vpn_panel_enabled_protocols"

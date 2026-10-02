@@ -1,0 +1,11 @@
+# LDAP and Active Directory
+
+Create a least-privilege directory service account able to read VPN users, account status and group membership. Use LDAPS or LDAP with StartTLS and a trusted CA. Set `LDAP_ENABLED=true`, URL, bind DN/password, user base DN and optional CA file. Secrets go in the protected secrets file. The gateway must resolve and reach the directory, including through the optional site connector.
+
+Defaults use `sAMAccountName`, `memberOf` and Active Directory's in-chain group search for nested groups. Override `vpn_panel_ldap_user_filter`, username attributes, group base and search filter for generic LDAP. Values inserted into filters are escaped. Referrals are not followed with the service account's credentials. Certificate validation is strict; an untrusted certificate is a provider configuration error, not a bad user password.
+
+Set exact qualified group policies (full DN) for privileged roles. Unqualified CN policies intentionally match that group name wherever it appears. Test direct and nested memberships, a user outside all VPN groups and a disabled/expired/locked account. The service account must read `msDS-User-Account-Control-Computed` and `pwdLastSet`: reconciliation suspends access for AD lockout, password expiry or a mandatory password change. AD computed flags follow the [Microsoft attribute definition](https://learn.microsoft.com/en-us/windows/win32/adschema/a-msds-user-account-control-computed).
+
+The directory-sync timer defaults to 15 minutes. It stages complete results before changes; a failed user or nested-group search aborts reconciliation and preserves access. A missing user must be confirmed across successful runs. The mass-disable breaker (`DIRECTORY_SYNC_MAX_DISABLE`, default 10%) aborts unexpectedly large offboarding waves. Investigate and explicitly raise the limit for an authorized bulk removal.
+
+A user explicitly disabled by an administrator remains disabled even when LDAP still admits them. Directory-driven disable may be reversed by confirmed readmission; manually suspended or expired devices remain suspended. Monitor directory-sync success and errors, and verify disabling a user stops active connections on all enabled protocols.

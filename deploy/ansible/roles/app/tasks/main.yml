@@ -1,55 +1,185 @@
-- name: App | Validate panel secret
+---
+# --- break-glass token: configured, else the one already deployed -----------------
+- name: App | Break-glass token already deployed
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import re, sys
+        for line in open(sys.argv[1], encoding="utf-8"):
+            if line.startswith("PANEL_SECRET_TOKEN="):
+                value = line.rstrip("\n").split("=", 1)[1]
+                if len(value) >= 2 and value[0] == value[-1] == '"':
+                    value = re.sub(r'\\(["\\])', r"\1", value[1:-1])
+                print(value)
+                break
+      - "{{ vpn_panel_app_dir }}/.env"
+  register: app_live_token
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: panel_secret_token | trim | length == 0
+
+- name: App | Token for this run
+  ansible.builtin.set_fact:
+    app_panel_secret_token: >-
+      {{ panel_secret_token | trim if panel_secret_token | trim | length > 0
+         else (app_live_token.stdout | default('') | trim) }}
+  no_log: true
+
+- name: App | Validate secrets
   ansible.builtin.assert:
     that:
-      - panel_secret_token | trim | length > 0
-      - panel_secret_token | lower not in ["changeme", "replace_me", "replace-with-long-random-token", "your-panel-secret-token", "example-token"]
-    fail_msg: "panel_secret_token must be set to a non-placeholder value."
+      - app_panel_secret_token | length > 0
+      - app_panel_secret_token | lower not in ["changeme", "replace_me", "replace-with-long-random-token", "your-panel-secret-token", "example-token"]
+      - not (vpn_panel_oidc_enabled | bool) or vpn_panel_oidc_client_secret | trim | length > 0
+      - not (vpn_panel_ldap_enabled | bool) or vpn_panel_ldap_bind_password | length > 0
+    fail_msg: >-
+      Set panel_secret_token (a non-placeholder value), and the OIDC client secret / LDAP bind
+      password when those are enabled, in group_vars/all.secrets.yml.
+    quiet: true
+  no_log: true
 
-- name: App | Validate Telegram secrets when bot is enabled
-  ansible.builtin.assert:
-    that:
-      - telegram_bot_token | trim | length > 0
-      - (vpn_panel_admin_user_ids | length) > 0
-    fail_msg: "telegram_bot_token and vpn_panel_admin_user_ids are required when vpn_panel_bot_enabled=true."
-  when: vpn_panel_bot_enabled | bool
-
-- name: App | Ensure application directories exist
+# --- code --------------------------------------------------------------------------
+- name: App | Application directories
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ item.path }}"
     state: directory
     owner: root
     group: root
-    mode: "0755"
+    mode: "{{ item.mode }}"
   loop:
-    - "{{ vpn_panel_app_dir }}"
-    - "{{ vpn_panel_config_dir }}"
-    - "{{ vpn_panel_backup_dir }}"
-    - "{{ vpn_panel_xray_apply_backup_dir }}"
+    - { path: "{{ vpn_panel_app_dir }}", mode: "0755" }
+    - { path: "{{ vpn_panel_config_dir }}", mode: "0700" }
+    - { path: "{{ vpn_panel_backup_dir }}", mode: "0700" }
+    - { path: "{{ vpn_panel_xray_apply_backup_dir }}", mode: "0700" }
 
-- name: App | Copy source files
+# One archive instead of a copy per file (one transfer), with modes fixed by the
+# packer: a Windows / WSL checkout reports 0777 for every file, and this code
+# runs as root.
+- name: App | Scratch directory on the deploy machine
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: corpvpn-panel-
+  register: app_pack_dir
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+
+- name: App | Pack the panel sources
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/files/pack_panel.py"
+      - "{{ vpn_panel_source_dir }}"
+      - "{{ app_pack_dir.path }}/panel.tar.gz"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+
+- name: App | Pinned dependencies (requirements.lock) in the sources?
+  ansible.builtin.stat:
+    path: "{{ vpn_panel_source_dir }}/requirements.lock"
+  register: app_lockfile
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+# unarchive's tar-diff omits content/size changes when fixed timestamps match.
+# copy checks the complete archive digest; tar runs whenever that digest changes.
+- name: App | Content-checked source archive
   ansible.builtin.copy:
-    src: "{{ vpn_panel_source_dir }}/{{ item }}"
-    dest: "{{ vpn_panel_app_dir }}/{{ item }}"
+    src: "{{ app_pack_dir.path }}/panel.tar.gz"
+    dest: "{{ vpn_panel_state_dir }}/panel-source.tar.gz"
     owner: root
     group: root
     mode: "0644"
-  loop: "{{ vpn_panel_app_source_files }}"
+  register: app_source_archive
 
-- name: App | Copy source directories
-  ansible.builtin.copy:
-    src: "{{ vpn_panel_source_dir }}/{{ item }}"
-    dest: "{{ vpn_panel_app_dir }}/"
-    owner: root
-    group: root
-    mode: preserve
-  loop: "{{ vpn_panel_app_source_dirs }}"
+- name: App | Verify installed source content
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import hashlib, pathlib, sys, tarfile
+        root = pathlib.Path(sys.argv[2])
+        with tarfile.open(sys.argv[1], "r:gz") as archive:
+            for member in archive.getmembers():
+                if not member.isfile():
+                    continue
+                target = root / member.name
+                if (target.is_symlink() or not target.is_file()
+                        or target.stat().st_mode & 0o777 != member.mode
+                        or hashlib.sha256(target.read_bytes()).digest()
+                        != hashlib.sha256(archive.extractfile(member).read()).digest()):
+                    sys.exit(1)
+      - "{{ vpn_panel_state_dir }}/panel-source.tar.gz"
+      - "{{ vpn_panel_app_dir }}"
+  register: app_source_check
+  changed_when: false
+  failed_when: false
 
-- name: App | Install Python dependencies in virtualenv
+- name: App | Install changed panel sources
+  ansible.builtin.command:
+    argv: [tar, -xzf, "{{ vpn_panel_state_dir }}/panel-source.tar.gz", -C, "{{ vpn_panel_app_dir }}"]
+  when: app_source_archive is changed or app_source_check.rc != 0
+  changed_when: true
+  notify: App | restart panel
+
+- name: App | Remove the scratch directory
+  ansible.builtin.file:
+    path: "{{ app_pack_dir.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+
+- name: App | Python dependencies (hash-checked requirements.lock)
+  ansible.builtin.pip:
+    requirements: "{{ vpn_panel_app_dir }}/requirements.lock"
+    extra_args: --require-hashes
+    virtualenv: "{{ vpn_panel_venv_dir }}"
+    virtualenv_command: python3 -m venv
+  environment: "{{ vpn_panel_proxy_env }}"
+  notify: App | restart panel
+  when: app_lockfile.stat.exists
+
+- name: App | Python dependencies (requirements.txt)
   ansible.builtin.pip:
     requirements: "{{ vpn_panel_app_dir }}/requirements.txt"
     virtualenv: "{{ vpn_panel_venv_dir }}"
     virtualenv_command: python3 -m venv
+  environment: "{{ vpn_panel_proxy_env }}"
+  notify: App | restart panel
+  when: not app_lockfile.stat.exists
 
+- name: App | Deploy remote Xray SSH key
+  ansible.builtin.copy:
+    src: "{{ vpn_panel_xray_remote_ssh_key_src }}"
+    dest: "{{ vpn_panel_xray_remote_ssh_key_dest }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: vpn_panel_xray_remote_ssh_key_src | trim | length > 0
+  no_log: true
+
+- name: App | Install the directory's CA certificate for LDAPS
+  ansible.builtin.copy:
+    src: "{{ vpn_panel_ldap_ca_src }}"
+    dest: "{{ vpn_panel_ldap_ca_dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: App | restart panel
+  when: vpn_panel_ldap_ca_src | length > 0
+
+# env.j2 renders the WHOLE file. Anything set by hand in .env on the host is
+# overwritten on every run — put it in group_vars/overrides.yml instead.
 - name: App | Render environment file
   ansible.builtin.template:
     src: env.j2
@@ -58,60 +188,73 @@
     group: root
     mode: "0600"
   no_log: true
+  notify: App | restart panel
 
-- name: App | Render AWG settings file
-  ansible.builtin.template:
-    src: awg_settings.json.j2
-    dest: "{{ vpn_panel_config_dir }}/awg_settings.json"
-    owner: root
-    group: root
-    mode: "0600"
-  no_log: true
+# --- AmneziaWG settings in awg.db ------------------------------------------------------
+- name: App | AmneziaWG settings
+  ansible.builtin.import_tasks: awg_settings.yml
+  vars:
+    app_awg_keys: [Jc, Jmin, Jmax, S1, S2, H1, H2, H3, H4]
+    app_awg_panel_values: "{{ app_awg_keys | map('extract', app_awg_db.stdout | from_json) | map('int') | list }}"
+    app_awg_live_values: "{{ app_awg_keys | map('extract', awg_server_obfuscation_effective) | map('int') | list }}"
+  when: "'awg' in vpn_panel_enabled_protocols"
 
-- name: App | Render panel systemd unit
+# --- units -------------------------------------------------------------------------
+- name: App | Panel and directory sync units
   ansible.builtin.template:
-    src: vpn-panel.service.j2
-    dest: /etc/systemd/system/vpn-panel.service
-    owner: root
-    group: root
-    mode: "0644"
-
-- name: App | Render Telegram bot systemd unit
-  ansible.builtin.template:
-    src: vpn-panel-telegram-bot.service.j2
-    dest: /etc/systemd/system/vpn-panel-telegram-bot.service
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
     owner: root
     group: root
     mode: "0644"
+  loop:
+    - vpn-panel.service
+    - vpn-panel-directory-sync.service
+    - vpn-panel-directory-sync.timer
+  notify:
+    - App | reload systemd
+    - App | restart panel
 
-- name: App | Reload systemd
-  ansible.builtin.systemd:
-    daemon_reload: true
+- name: App | Apply pending changes
+  ansible.builtin.meta: flush_handlers
 
-- name: App | Enable and restart panel service
+- name: App | Panel service enabled and running
   ansible.builtin.systemd:
     name: vpn-panel.service
     enabled: true
-    state: restarted
+    state: started
   when: vpn_panel_panel_enabled | bool
 
-- name: App | Disable panel service when not requested
+- name: App | Panel service stopped (vpn_panel_panel_enabled is false)
   ansible.builtin.systemd:
     name: vpn-panel.service
     enabled: false
     state: stopped
   when: not (vpn_panel_panel_enabled | bool)
 
-- name: App | Enable and restart Telegram bot service
-  ansible.builtin.systemd:
-    name: vpn-panel-telegram-bot.service
-    enabled: true
-    state: restarted
-  when: vpn_panel_bot_enabled | bool
+# directory_sync: LDAP offboarding and OIDC attestation. Only useful when a
+# directory provider is configured.
+- name: App | Decide whether directory sync runs
+  ansible.builtin.set_fact:
+    vpn_panel_directory_sync_enabled: >-
+      {{ (vpn_panel_ldap_enabled | bool)
+         or ((vpn_panel_oidc_enabled | bool) and (vpn_panel_auth_attestation_days | int) > 0) }}
 
-- name: App | Disable Telegram bot service when not requested
+- name: App | Directory sync timer
   ansible.builtin.systemd:
-    name: vpn-panel-telegram-bot.service
-    enabled: false
-    state: stopped
-  when: not (vpn_panel_bot_enabled | bool)
+    name: vpn-panel-directory-sync.timer
+    enabled: "{{ vpn_panel_directory_sync_enabled | bool }}"
+    state: "{{ 'started' if (vpn_panel_directory_sync_enabled | bool) else 'stopped' }}"
+
+# Earlier deploys ran the daily backup from cron; the backup role's timer replaces it.
+- name: App | Look for crontab
+  ansible.builtin.stat:
+    path: /usr/bin/crontab
+  register: app_crontab
+
+- name: App | Remove the old backup cron job
+  ansible.builtin.cron:
+    name: "vpn-panel daily backup"
+    user: root
+    state: absent
+  when: app_crontab.stat.exists

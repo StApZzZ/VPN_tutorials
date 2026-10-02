@@ -1,0 +1,220 @@
+---
+- name: Site link | Work out this host's side
+  ansible.builtin.set_fact:
+    site_link_side: "{{ 'connector' if 'site_connector' in group_names else 'gateway' }}"
+    site_link_gateway_host: "{{ (groups['management'] | default([]))[0] | default('') }}"
+    site_link_connector_host: "{{ (groups['site_connector'] | default([]))[0] | default('') }}"
+
+- name: Site link | Validate the inventory and settings
+  ansible.builtin.assert:
+    that:
+      - groups['management'] | default([]) | length == 1
+      - groups['site_connector'] | default([]) | length == 1
+      - site_link_corp_cidrs | length > 0
+    fail_msg: >-
+      site-connector.yml needs exactly one host in group management (gateway), one in
+      group site_connector, and vpn_panel_corp_cidrs (or site_link_corp_cidrs) set.
+    quiet: true
+
+# In split mode A routes every corporate range into the link: a range holding A's
+# own address or router would cut A off its own network (DNS, mirrors, SSH).
+- name: Site link | Corporate ranges leave the gateway's own network alone
+  ansible.builtin.assert:
+    that: site_link_overlaps | length == 0 or vpn_panel_allow_corp_overlap | bool
+    fail_msg: >-
+      {{ site_link_overlaps | join(', ') }} contain(s) this gateway's own address or default router
+      ({{ site_link_own | select | join(', ') }}); routing it into the site link would cut the
+      gateway off its own network. Narrow CORP_CIDRS, or set vpn_panel_allow_corp_overlap: true
+      when that range really is reachable only through the office.
+    quiet: true
+  vars:
+    site_link_own: >-
+      {{ (ansible_all_ipv4_addresses | default([])) + [ansible_default_ipv4.gateway | default('')] }}
+    site_link_overlaps: "{{ site_link_corp_cidrs | corpvpn_containing(site_link_own) }}"
+  when: site_link_side == 'gateway'
+
+- name: Site link | Install WireGuard tools and nftables
+  ansible.builtin.apt:
+    name:
+      - wireguard-tools
+      - nftables
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 600
+    policy_rc_d: 101
+
+- name: Site link | Forwarding, persistent
+  ansible.builtin.include_role:
+    name: network_policy
+    tasks_from: forwarding.yml
+  vars:
+    corpvpn_forward_sysctl_file: 99-zz-corpvpn-site-link.conf
+    corpvpn_forward_legacy_file: 60-corpvpn-site-link.conf
+    corpvpn_forward_comment: "CorpVPN site link: forward between the VPN and the corporate LAN."
+
+# Keys never leave the hosts except the pre-shared key, copied A -> B once.
+- name: Site link | Generate the private key (once)
+  ansible.builtin.shell: umask 077 && wg genkey > /etc/wireguard/{{ site_link_iface }}.key
+  args:
+    creates: /etc/wireguard/{{ site_link_iface }}.key
+
+- name: Site link | Generate the pre-shared key on the gateway (once)
+  ansible.builtin.shell: umask 077 && wg genpsk > /etc/wireguard/{{ site_link_iface }}.psk
+  args:
+    creates: /etc/wireguard/{{ site_link_iface }}.psk
+  when: site_link_side == 'gateway'
+
+- name: Site link | Read the public key
+  ansible.builtin.shell: wg pubkey < /etc/wireguard/{{ site_link_iface }}.key
+  register: site_link_pubkey
+  changed_when: false
+
+- name: Site link | Read the pre-shared key
+  ansible.builtin.slurp:
+    src: /etc/wireguard/{{ site_link_iface }}.psk
+  register: site_link_psk
+  no_log: true
+  when: site_link_side == 'gateway'
+
+- name: Site link | Install the pre-shared key on the connector
+  ansible.builtin.copy:
+    dest: /etc/wireguard/{{ site_link_iface }}.psk
+    content: "{{ hostvars[site_link_gateway_host].site_link_psk.content | b64decode }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: site_link_side == 'connector'
+  notify: Restart site link
+
+- name: Site link | Detect firewall conflicts
+  ansible.builtin.include_role:
+    name: network_policy
+    tasks_from: detect.yml
+  vars:
+    corpvpn_detect_ifaces: ["{{ site_link_iface }}"]
+    corpvpn_detect_udp_ports: "{{ [site_link_port] if site_link_side == 'gateway' else [] }}"
+    corpvpn_detect_tcp_ports: []
+
+- name: Site link | Is systemd-resolved running? (split DNS for CORP_DOMAINS) # noqa: command-instead-of-module - read-only diagnostics need exact output
+  ansible.builtin.command: systemctl is-active systemd-resolved
+  register: site_link_resolved
+  changed_when: false
+  failed_when: false
+  when:
+    - site_link_side == 'gateway'
+    - vpn_panel_corp_domains | length > 0
+
+- name: Site link | CORP_DOMAINS need systemd-resolved on the gateway
+  ansible.builtin.debug:
+    msg: >-
+      systemd-resolved is not running on the gateway, so names under {{ vpn_panel_corp_domains | join(', ') }}
+      are not sent to the corporate resolvers. Enable it, or add the names the panel needs (LDAP, IdP) to
+      /etc/hosts.
+  when:
+    - site_link_side == 'gateway'
+    - vpn_panel_corp_domains | length > 0
+    - site_link_resolved.stdout | default('') | trim != 'active'
+
+- name: Site link | Connector nftables rules (only corporate ranges, masquerade into the LAN)
+  ansible.builtin.template:
+    src: site-link.nft.j2
+    dest: /etc/wireguard/{{ site_link_iface }}.nft
+    owner: root
+    group: root
+    mode: "0644"
+  when: site_link_side == 'connector'
+  notify: Restart site link
+
+- name: Site link | WireGuard config
+  ansible.builtin.template:
+    src: wg-site.conf.j2
+    dest: /etc/wireguard/{{ site_link_iface }}.conf
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    site_link_split_dns: >-
+      {{ site_link_side == 'gateway' and vpn_panel_corp_domains | length > 0
+         and site_link_resolved.stdout | default('') | trim == 'active' }}
+  notify: Restart site link
+
+- name: Site link | Enable the link
+  ansible.builtin.systemd:
+    name: wg-quick@{{ site_link_iface }}
+    enabled: true
+    state: started
+
+- name: Site link | Apply pending restarts before the checks
+  ansible.builtin.meta: flush_handlers
+
+# Docker's FORWARD policy DROP would drop every corporate packet on the connector.
+- name: Site link | Docker integration on the connector
+  ansible.builtin.include_role:
+    name: network_policy
+    tasks_from: docker.yml
+  vars:
+    corpvpn_docker_user_pairs: "{{ [[site_link_iface, site_link_lan_iface or ansible_default_ipv4.interface]] }}"
+  when:
+    - site_link_side == 'connector'
+    - corpvpn_docker_active | bool
+
+- name: Site link | Wait for the handshake (connector side)
+  ansible.builtin.shell: |
+    set -o pipefail
+    for i in $(seq 1 30); do
+      ts=$(wg show {{ site_link_iface }} latest-handshakes | awk '{print $2}' | head -n1)
+      [ -n "$ts" ] && [ "$ts" -gt 0 ] && exit 0
+      sleep 1
+    done
+    exit 1
+  args:
+    executable: /bin/bash
+  register: site_link_handshake
+  changed_when: false
+  failed_when: false
+  when: site_link_side == 'connector'
+
+- name: Site link | Stop without a handshake
+  ansible.builtin.fail:
+    msg: >-
+      No handshake with the gateway after 30 s: check that UDP {{ site_link_port }} reaches
+      {{ site_link_gateway_endpoint or hostvars[site_link_gateway_host].ansible_host | default(site_link_gateway_host) }}
+      from the connector (cloud security group, a firewall on the gateway, the office's outbound firewall).
+  when:
+    - site_link_side == 'connector'
+    - site_link_handshake.rc != 0
+
+- name: Site link | The gateway reaches the connector through the link
+  ansible.builtin.command: ping -c 3 -W 2 {{ site_link_connector_address | split('/') | first }}
+  register: site_link_ping
+  changed_when: false
+  retries: 3
+  delay: 2
+  until: site_link_ping.rc == 0
+  when: site_link_side == 'gateway'
+
+- name: Site link | Directory and IdP names the panel uses
+  ansible.builtin.command: getent hosts {{ item }}
+  loop: "{{ site_link_idp_hosts }}"
+  register: site_link_idp_lookup
+  changed_when: false
+  failed_when: false
+  vars:
+    site_link_idp_hosts: >-
+      {{ ([vpn_panel_ldap_url | urlsplit('hostname')] if vpn_panel_ldap_enabled | default(false) | bool
+          and vpn_panel_ldap_url | default('') else [])
+         + ([vpn_panel_oidc_discovery_url | urlsplit('hostname')] if vpn_panel_oidc_enabled | default(false) | bool
+            and vpn_panel_oidc_discovery_url | default('') else []) }}
+  when: site_link_side == 'gateway'
+
+- name: Site link | Names the gateway cannot resolve
+  ansible.builtin.debug:
+    msg: >-
+      {{ site_link_idp_lookup.results | rejectattr('rc', 'equalto', 0) | map(attribute='item') | join(', ') }}
+      do(es) not resolve on the gateway, so sign-in through it fails. Set CORP_DOMAINS (resolved by
+      the corporate DNS through the site link) or add the names to /etc/hosts on the gateway.
+  when:
+    - site_link_side == 'gateway'
+    - site_link_idp_lookup.results | default([]) | rejectattr('rc', 'equalto', 0) | list | length > 0

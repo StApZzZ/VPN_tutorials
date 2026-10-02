@@ -1,0 +1,56 @@
+---
+- name: Health check | Script
+  ansible.builtin.copy:
+    src: corpvpn-healthcheck
+    dest: /usr/local/sbin/corpvpn-healthcheck
+    owner: root
+    group: root
+    mode: "0755"
+  when: vpn_panel_healthcheck_enabled | bool
+
+- name: Health check | Settings
+  ansible.builtin.copy:
+    dest: "{{ vpn_panel_config_dir }}/healthcheck.json"
+    content: "{{ healthcheck_settings | to_nice_json }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: vpn_panel_healthcheck_enabled | bool
+
+- name: Health check | Service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - corpvpn-healthcheck.service
+    - corpvpn-healthcheck.timer
+  notify: Health check | reload systemd
+  when: vpn_panel_healthcheck_enabled | bool
+
+- name: Health check | Apply unit changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Health check | Timer running
+  ansible.builtin.systemd:
+    name: corpvpn-healthcheck.timer
+    enabled: true
+    state: started
+  when: vpn_panel_healthcheck_enabled | bool
+
+- name: Health check | Timer from an earlier deploy
+  ansible.builtin.stat:
+    path: /etc/systemd/system/corpvpn-healthcheck.timer
+  register: healthcheck_timer_unit
+  when: not (vpn_panel_healthcheck_enabled | bool)
+
+- name: Health check | Timer off (vpn_panel_healthcheck_enabled is false)
+  ansible.builtin.systemd:
+    name: corpvpn-healthcheck.timer
+    enabled: false
+    state: stopped
+  when:
+    - not (vpn_panel_healthcheck_enabled | bool)
+    - healthcheck_timer_unit.stat.exists

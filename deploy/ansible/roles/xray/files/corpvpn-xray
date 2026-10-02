@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""CorpVPN's Xray config tool (installed by the xray role as /usr/local/sbin/corpvpn-xray).
+
+The REALITY key pair is created and kept on the gateway: the private key exists
+only in the Xray config, and everything else (the panel's .env, client links)
+gets the public key derived from it, so the two cannot drift apart. Standard
+library only; keys never appear on a command line.
+
+  render    build the config from the role's seed (the parts the deploy manages:
+            the VLESS inbound's address and REALITY settings, the outbounds),
+            keeping what the panel owns (clients, routing, other sections) and
+            the existing key and short IDs; writes --out only when it changes
+  selftest  prove the REALITY server name works: a throwaway server and client
+            on loopback must fetch https://<server name>/ through the tunnel
+  install   put a rendered config in place (atomic, 0640 root:<group>)
+  pubkey    the public REALITY parameters of a config, as JSON
+  check     compare them with what the panel hands to clients (.env); exit 2 on
+            a mismatch
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import binascii
+import copy
+import grp
+import json
+import os
+import re
+import secrets
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+
+_P = 2**255 - 19
+_A24 = 121665
+_SHORT_ID = re.compile(r"^(?:[0-9a-f]{2}){0,8}$")
+
+
+class ToolError(Exception):
+    def __init__(self, message: str, code: int = 1):
+        super().__init__(message)
+        self.code = code
+
+
+# ------------------------------------------------------------------ keys
+def x25519(scalar: bytes, u: bytes) -> bytes:
+    """X25519 (RFC 7748, section 5)."""
+    k = bytearray(scalar)
+    k[0] &= 248
+    k[31] &= 127
+    k[31] |= 64
+    n = int.from_bytes(bytes(k), "little")
+    x1 = int.from_bytes(u, "little") & ((1 << 255) - 1)
+    x2, z2, x3, z3, swap = 1, 0, x1, 1, 0
+    for t in reversed(range(255)):
+        bit = (n >> t) & 1
+        swap ^= bit
+        if swap:
+            x2, x3, z2, z3 = x3, x2, z3, z2
+        swap = bit
+        a, b = (x2 + z2) % _P, (x2 - z2) % _P
+        aa, bb = a * a % _P, b * b % _P
+        e = (aa - bb) % _P
+        c, d = (x3 + z3) % _P, (x3 - z3) % _P
+        da, cb = d * a % _P, c * b % _P
+        x3 = (da + cb) ** 2 % _P
+        z3 = x1 * (da - cb) ** 2 % _P
+        x2 = aa * bb % _P
+        z2 = e * (aa + _A24 * e) % _P
+    if swap:
+        x2, z2 = x3, z3
+    return (x2 * pow(z2, _P - 2, _P) % _P).to_bytes(32, "little")
+
+
+def _b64decode(value: str) -> bytes:
+    text = value.strip().replace("-", "+").replace("_", "/")
+    try:
+        return base64.b64decode(text + "=" * (-len(text) % 4), validate=True)
+    except (binascii.Error, ValueError, UnicodeEncodeError) as exc:
+        raise ToolError("invalid REALITY key encoding") from exc
+
+
+def _b64url(raw: bytes) -> str:
+    """Xray's key encoding: base64 RawURLEncoding."""
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def public_key(private_key: str) -> str:
+    raw = _b64decode(private_key)
+    if len(raw) != 32:
+        raise ToolError("the REALITY private key is not a 32-byte X25519 key")
+    return _b64url(x25519(raw, (9).to_bytes(32, "little")))
+
+
+def new_private_key() -> str:
+    raw = bytearray(secrets.token_bytes(32))
+    raw[0] &= 248
+    raw[31] &= 127
+    raw[31] |= 64
+    return _b64url(bytes(raw))
+
+
+# ------------------------------------------------------------------ config
+def load_json(path: str):
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def find_inbound(cfg: dict | None, tag: str) -> dict | None:
+    """The managed VLESS inbound: by tag, else the first VLESS + REALITY one."""
+    inbounds = (cfg or {}).get("inbounds") or []
+    for inbound in inbounds:
+        if inbound.get("tag") == tag:
+            return inbound
+    for inbound in inbounds:
+        stream = inbound.get("streamSettings") or {}
+        if inbound.get("protocol") == "vless" and stream.get("realitySettings"):
+            return inbound
+    return None
+
+
+def reality_params(cfg: dict, tag: str) -> dict:
+    inbound = find_inbound(cfg, tag)
+    if inbound is None:
+        raise ToolError(f"no VLESS REALITY inbound (tag {tag}) in the config")
+    rs = (inbound.get("streamSettings") or {}).get("realitySettings") or {}
+    if not rs.get("privateKey"):
+        raise ToolError("the REALITY inbound has no private key")
+    short_ids = [str(s) for s in rs.get("shortIds") or []]
+    return {
+        "public_key": public_key(rs["privateKey"]),
+        "short_id": next((s for s in short_ids if s), short_ids[0] if short_ids else ""),
+        "short_ids": short_ids,
+        "server_name": (rs.get("serverNames") or [""])[0],
+        "server_names": list(rs.get("serverNames") or []),
+        "dest": rs.get("dest", ""),
+    }
+
+
+def merge(seed: dict, live: dict | None, tag: str, private_key: str, short_ids: list[str]) -> dict:
+    result = copy.deepcopy(live) if live is not None else copy.deepcopy(seed)
+    wanted = copy.deepcopy(find_inbound(seed, tag))
+    if wanted is None:
+        raise ToolError(f"the seed has no inbound tagged {tag}")
+    current = find_inbound(result, tag)
+    if current is not None:
+        old_stream = current.get("streamSettings") or {}
+        settings = copy.deepcopy(current.get("settings") or {})
+        settings.update({k: v for k, v in (wanted.get("settings") or {}).items() if k != "clients"})
+        settings.setdefault("clients", [])
+        stream = copy.deepcopy(old_stream)
+        stream.update({k: v for k, v in wanted["streamSettings"].items() if k not in ("realitySettings", "sockopt")})
+        reality = copy.deepcopy(old_stream.get("realitySettings") or {})
+        reality.update(wanted["streamSettings"].get("realitySettings") or {})
+        stream["realitySettings"] = reality
+        sockopt = copy.deepcopy(old_stream.get("sockopt") or {})
+        sockopt.update(wanted["streamSettings"].get("sockopt") or {})
+        if sockopt:
+            stream["sockopt"] = sockopt
+        wanted["settings"], wanted["streamSettings"] = settings, stream
+        for key, value in current.items():
+            wanted.setdefault(key, copy.deepcopy(value))
+        inbounds = result["inbounds"]
+        inbounds[inbounds.index(current)] = wanted
+    else:
+        result.setdefault("inbounds", []).insert(0, wanted)
+    reality = wanted["streamSettings"]["realitySettings"]
+    reality["privateKey"], reality["shortIds"] = private_key, list(short_ids)
+
+    outbounds = result.setdefault("outbounds", [])
+    for position, outbound in enumerate(seed.get("outbounds") or []):
+        tags = [o.get("tag") for o in outbounds]
+        if outbound.get("tag") in tags:
+            outbounds[tags.index(outbound.get("tag"))] = copy.deepcopy(outbound)
+        else:
+            outbounds.insert(min(position, len(outbounds)), copy.deepcopy(outbound))
+    for section in ("log", "routing"):
+        if section in seed and section not in result:
+            result[section] = copy.deepcopy(seed[section])
+    return result
+
+
+def _write(path: str, cfg: dict, group: str) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(cfg, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    os.chmod(path, 0o640)
+    if group:
+        os.chown(path, 0, grp.getgrnam(group).gr_gid)
+
+
+def cmd_render(args) -> dict:
+    seed = load_json(args.seed)
+    live = load_json(args.config) if os.path.exists(args.config) else None
+    wanted_seed = json.loads(sys.stdin.read() or "{}") if args.secret_stdin else {}
+    seed_key = str(wanted_seed.get("private_key") or "").strip()
+    seed_sid = str(wanted_seed.get("short_id") or "").strip().lower()
+    if seed_sid and not _SHORT_ID.match(seed_sid):
+        raise ToolError("the REALITY short ID must be 0-16 hex digits, an even number of them")
+
+    current = find_inbound(live, args.tag)
+    old = (current or {}).get("streamSettings", {}).get("realitySettings") or {}
+    if old.get("privateKey") and not args.rotate:
+        private_key, short_ids = old["privateKey"], [str(s) for s in old.get("shortIds") or [""]]
+        if seed_key and public_key(seed_key) != public_key(private_key):
+            raise ToolError("the REALITY key in the config differs from the one in the settings; every "
+                            "issued VLESS link uses the key in the config: remove the setting, or rotate "
+                            "deliberately (vpn_panel_xray_reality_rotate)", code=3)
+        if seed_sid and seed_sid not in short_ids:
+            raise ToolError(f"the short ID in the settings is not one of the config's {short_ids}", code=3)
+    else:
+        private_key = seed_key if (seed_key and not args.rotate) else new_private_key()
+        short_ids = [seed_sid if (seed_sid and not args.rotate) else secrets.token_hex(8)]
+    public_key(private_key)  # refuse a malformed key before anything is written
+
+    result = merge(seed, live, args.tag, private_key, short_ids)
+    changed = result != live
+    if changed:
+        _write(args.out, result, args.group)
+    params = reality_params(result, args.tag)
+    before = reality_params(live, args.tag) if (live is not None and old.get("privateKey")) else None
+    reality_changed = before is None or any(
+        before[k] != params[k] for k in ("public_key", "short_ids", "server_names", "dest"))
+    return {
+        "changed": changed,
+        "created": before is None,
+        "reality_changed": reality_changed,
+        "server_name_changed": before is not None and before["server_names"] != params["server_names"],
+        **{k: params[k] for k in ("public_key", "short_id", "server_name")},
+    }
+
+
+def cmd_install(args) -> dict:
+    os.chmod(args.new, 0o640)
+    if args.group:
+        os.chown(args.new, 0, grp.getgrnam(args.group).gr_gid)
+    os.replace(args.new, args.config)
+    return {"installed": args.config}
+
+
+def cmd_pubkey(args) -> dict:
+    return reality_params(load_json(args.config), args.tag)
+
+
+def read_env(path: str) -> dict[str, str]:
+    """KEY=VALUE lines; double-quoted values are unescaped as the panel reads them."""
+    out: dict[str, str] = {}
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] == '"':
+                value = re.sub(r'\\(["\\])', r"\1", value[1:-1])
+            elif len(value) >= 2 and value[0] == value[-1] == "'":
+                value = value[1:-1]
+            out[key.strip()] = value
+    return out
+
+
+def cmd_check(args) -> dict:
+    params = reality_params(load_json(args.config), args.tag)
+    env = read_env(args.env)
+    problems = []
+    if env.get("XRAY_CLIENT_REALITY_PUBLIC_KEY", "") != params["public_key"]:
+        problems.append(f"the panel hands out public key {env.get('XRAY_CLIENT_REALITY_PUBLIC_KEY') or '(none)'}, "
+                        f"the server's key gives {params['public_key']}")
+    if env.get("XRAY_CLIENT_REALITY_SHORT_ID", "") not in params["short_ids"]:
+        problems.append(f"the panel's short ID {env.get('XRAY_CLIENT_REALITY_SHORT_ID') or '(none)'} "
+                        f"is not one of the server's {params['short_ids']}")
+    if env.get("XRAY_CLIENT_REALITY_SERVER_NAME", "") not in params["server_names"]:
+        problems.append(f"the panel's server name {env.get('XRAY_CLIENT_REALITY_SERVER_NAME') or '(none)'} "
+                        f"is not one of the server's {params['server_names']}")
+    if problems:
+        raise ToolError("REALITY settings differ, new VLESS links would fail: " + "; ".join(problems)
+                        + ". Re-run the deploy: it feeds the panel from the server's config.", code=2)
+    return {"ok": True, "public_key": params["public_key"]}
+
+
+# ------------------------------------------------------------------ selftest
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _listening(port: int) -> bool:
+    with socket.socket() as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def selftest_configs(params: dict, private_key: str, server_port: int, socks_port: int, client_id: str):
+    reality_server = {"show": False, "dest": params["dest"], "xver": 0, "serverNames": [params["server_name"]],
+                      "privateKey": private_key, "shortIds": [params["short_id"]]}
+    server = {
+        "log": {"loglevel": "warning", "access": "none"},
+        "inbounds": [{"listen": "127.0.0.1", "port": server_port, "protocol": "vless",
+                      "settings": {"clients": [{"id": client_id}], "decryption": "none"},
+                      "streamSettings": {"network": "tcp", "security": "reality",
+                                         "realitySettings": reality_server}}],
+        "outbounds": [{"protocol": "freedom", "tag": "direct"}],
+    }
+    client = {
+        "log": {"loglevel": "warning", "access": "none"},
+        "inbounds": [{"listen": "127.0.0.1", "port": socks_port, "protocol": "socks", "settings": {"udp": False}}],
+        "outbounds": [{"protocol": "vless", "tag": "proxy",
+                       "settings": {"vnext": [{"address": "127.0.0.1", "port": server_port,
+                                               "users": [{"id": client_id, "encryption": "none"}]}]},
+                       "streamSettings": {"network": "tcp", "security": "reality",
+                                          "realitySettings": {"serverName": params["server_name"],
+                                                              "fingerprint": "chrome",
+                                                              "password": params["public_key"],
+                                                              "shortId": params["short_id"]}}}],
+    }
+    return server, client
+
+
+def cmd_selftest(args) -> dict:
+    cfg = load_json(args.config)
+    params = reality_params(cfg, args.tag)
+    private_key = find_inbound(cfg, args.tag)["streamSettings"]["realitySettings"]["privateKey"]
+    server_port, socks_port = _free_port(), _free_port()
+    server, client = selftest_configs(params, private_key, server_port, socks_port, str(uuid.uuid4()))
+    url = f"https://{params['server_name']}/"
+    procs = []
+    with tempfile.TemporaryDirectory(prefix="corpvpn-reality-") as tmp:
+        try:
+            for name, body, port in (("server", server, server_port), ("client", client, socks_port)):
+                path = os.path.join(tmp, f"{name}.json")
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+                with os.fdopen(fd, "w") as handle:
+                    json.dump(body, handle)
+                log = open(os.path.join(tmp, f"{name}.log"), "w")
+                procs.append((name, subprocess.Popen([args.xray, "run", "-c", path], stdout=log,
+                                                     stderr=subprocess.STDOUT), log))
+                deadline = time.monotonic() + 10
+                while not _listening(port):
+                    if procs[-1][1].poll() is not None or time.monotonic() > deadline:
+                        raise ToolError(f"the test {name} did not start")
+                    time.sleep(0.2)
+            result = subprocess.run(
+                ["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", str(args.timeout),
+                 "--socks5-hostname", f"127.0.0.1:{socks_port}", url],
+                capture_output=True, text=True)
+            code = result.stdout.strip()
+            if result.returncode != 0 or code in ("", "000"):
+                raise ToolError(
+                    f"REALITY self-test with {params['server_name']} (dest {params['dest']}) failed: "
+                    f"{(result.stderr or 'no response').strip()}. The site must answer TLS 1.3 with a short "
+                    "certificate chain and be reachable from this host; pick another server name "
+                    "(REALITY_SERVER_NAME / vpn_panel_xray_client_reality_server_name).")
+            return {"ok": True, "server_name": params["server_name"], "http_status": code}
+        except ToolError as exc:
+            for name, _proc, log in procs:
+                log.flush()
+                with open(log.name, encoding="utf-8", errors="replace") as handle:
+                    tail = handle.read()[-1500:].strip()
+                if tail:
+                    exc.args = (f"{exc.args[0]}\n--- test {name} log ---\n{tail}",)
+            raise
+        finally:
+            for _name, proc, log in procs:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                log.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    render = sub.add_parser("render")
+    render.add_argument("--seed", required=True)
+    render.add_argument("--config", required=True)
+    render.add_argument("--out", required=True)
+    render.add_argument("--tag", default="vless-in")
+    render.add_argument("--group", default="")
+    render.add_argument("--rotate", action="store_true", help="new key pair and short ID")
+    render.add_argument("--secret-stdin", action="store_true",
+                        help='read {"private_key": ..., "short_id": ...} for a first install from stdin')
+    render.set_defaults(func=cmd_render)
+
+    install = sub.add_parser("install")
+    install.add_argument("--new", required=True)
+    install.add_argument("--config", required=True)
+    install.add_argument("--group", default="")
+    install.set_defaults(func=cmd_install)
+
+    for name, func in (("pubkey", cmd_pubkey), ("check", cmd_check), ("selftest", cmd_selftest)):
+        command = sub.add_parser(name)
+        command.add_argument("--config", required=True)
+        command.add_argument("--tag", default="vless-in")
+        if name == "check":
+            command.add_argument("--env", required=True)
+        if name == "selftest":
+            command.add_argument("--xray", default="/usr/local/bin/xray")
+            command.add_argument("--timeout", type=int, default=15)
+        command.set_defaults(func=func)
+
+    args = parser.parse_args(argv)
+    try:
+        print(json.dumps(args.func(args)))
+        return 0
+    except ToolError as exc:
+        print(f"corpvpn-xray {args.command}: {exc}", file=sys.stderr)
+        return exc.code
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"corpvpn-xray {args.command}: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

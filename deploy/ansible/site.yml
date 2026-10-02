@@ -1,119 +1,41 @@
-- name: Deploy VPN Panel
-  hosts: all
+---
+- name: Deploy CorpVPN
+  hosts: "{{ groups['management'] | default(groups['all']) }}"
   become: true
   gather_facts: true
-  vars:
-    vpn_panel_local_project_root: "{{ playbook_dir }}/../.."
-    vpn_panel_source_dir: "{{ vpn_panel_local_project_root }}/amnezia-panel-src"
-    vpn_panel_app_dir: /opt/vpn-panel
-    vpn_panel_config_dir: /etc/vpn-panel
-    vpn_panel_backup_dir: /var/backups/vpn-panel
-    vpn_panel_venv_dir: "{{ vpn_panel_app_dir }}/.venv"
-    vpn_panel_panel_host: 127.0.0.1
-    vpn_panel_panel_port: 8080
-    vpn_panel_panel_enabled: true
-    vpn_panel_nginx_enabled: true
-    vpn_panel_server_name: _
-    vpn_panel_public_host: "{{ ansible_host | default(inventory_hostname) }}"
-    vpn_panel_fallback_host: "{{ vpn_panel_public_host }}"
-    vpn_panel_nginx_ipv6_enabled: "{{ (ansible_all_ipv6_addresses | default([])) | length > 0 }}"
-    vpn_panel_telegram_panel_base_url: "http://{{ vpn_panel_panel_host }}:{{ vpn_panel_panel_port }}"
-    vpn_panel_wg_endpoint_host: "{{ vpn_panel_server_name if vpn_panel_server_name != '_' else vpn_panel_public_host }}"
-    vpn_panel_bot_enabled: false
-    vpn_panel_bot_username: ""
-    vpn_panel_allowed_chat_ids: []
-    vpn_panel_admin_user_ids: []
-    vpn_panel_poll_timeout: 30
-    vpn_panel_request_timeout: 45
-    vpn_panel_proxy_url: ""
-    vpn_panel_subscription_check_interval_seconds: 300
-    vpn_panel_subscription_notify_days:
-      - 3
-      - 1
-      - 0
-    vpn_panel_app_source_files:
-      - awg_settings.py
-      - client_artifacts.py
-      - config.py
-      - main.py
-      - models.py
-      - peer_artifacts.py
-      - requirements.txt
-      - routing_overrides.py
-      - telegram_access.py
-      - telegram_bot.py
-      - telegram_command_docs.py
-      - telegram_name_backfill.py
-      - vpn_manager.py
-      - xray_clients.py
-      - xray_manager.py
-    vpn_panel_app_source_dirs:
-      - static
-      - templates
-    vpn_panel_system_packages:
-      - python3
-      - python3-pip
-      - python3-venv
-      - nginx
-    vpn_panel_wg_interface: wg0
-    vpn_panel_wg_config_path: /etc/wireguard/wg0.conf
-    vpn_panel_wg_public_key_path: /etc/wireguard/wg0_public.key
-    vpn_panel_wg_clients_table: /etc/wireguard/clientsTable
-    vpn_panel_client_private_keys_path: /etc/wireguard/clientsPrivateKeys.json
-    vpn_panel_wg_port: 34011
-    vpn_panel_wg_network: 10.8.2.0/24
-    vpn_panel_wg_server_ip: 10.8.2.1
-    vpn_panel_dns_servers:
-      - 1.1.1.1
-      - 1.0.0.1
-    vpn_panel_awg_settings:
-      endpoint_host: "{{ vpn_panel_wg_endpoint_host }}"
-      endpoint_port: "{{ vpn_panel_wg_port }}"
-      dns_servers: "{{ vpn_panel_dns_servers | join(',') }}"
-      persistent_keepalive: 25
-      Jc: 0
-      Jmin: 0
-      Jmax: 0
-      S1: 0
-      S2: 0
-      S3: 0
-      S4: 0
-      H1: 0
-      H2: 0
-      H3: 0
-      H4: 0
-      I1: ""
-      I2: ""
-      I3: ""
-      I4: ""
-      I5: ""
-    vpn_panel_telegram_access_path: "{{ vpn_panel_config_dir }}/telegram_access.json"
-    vpn_panel_routing_overrides_path: "{{ vpn_panel_config_dir }}/routing_overrides.json"
-    vpn_panel_xray_routing_export_path: /etc/xray/routing.generated.json
-    vpn_panel_xray_merged_config_export_path: /etc/xray/config.generated.json
-    vpn_panel_xray_base_config_path: /etc/xray/config.json
-    vpn_panel_xray_action_state_path: "{{ vpn_panel_config_dir }}/xray_action_state.json"
-    vpn_panel_xray_apply_backup_dir: "{{ vpn_panel_backup_dir }}/xray"
-    vpn_panel_xray_validate_command: ""
-    vpn_panel_xray_reload_command: ""
-    vpn_panel_xray_clients_path: "{{ vpn_panel_config_dir }}/xray_clients.json"
-    vpn_panel_xray_client_inbound_tag: vless-in
-    vpn_panel_xray_client_server: "{{ vpn_panel_server_name if vpn_panel_server_name != '_' else vpn_panel_public_host }}"
-    vpn_panel_xray_client_port: 443
-    vpn_panel_xray_client_network: tcp
-    vpn_panel_xray_client_security: reality
-    vpn_panel_xray_client_local_socks_port: 10808
-    vpn_panel_xray_client_local_http_port: 10809
-    vpn_panel_xray_client_reality_server_name: www.microsoft.com
-    vpn_panel_xray_client_reality_public_key: ""
-    vpn_panel_xray_client_reality_short_id: ""
-    vpn_panel_xray_client_fingerprint: chrome
-    vpn_panel_xray_client_flow: ""
-    panel_secret_token: ""
-    telegram_bot_token: ""
-    telegram_panel_token: ""
   roles:
-    - common
-    - app
-    - nginx
-    - smoke
+    - role: preflight
+      tags:
+        - preflight
+    - role: common
+      tags:
+        - common
+    - role: network_policy
+      tags:
+        - network_policy
+    - role: wg_server
+      tags:
+        - wg_server
+    - role: awg_server
+      tags:
+        - awg_server
+    - role: xray
+      tags:
+        - xray
+    - role: app
+      tags:
+        - app
+    - role: nginx
+      tags:
+        - nginx
+    - role: backup
+      tags:
+        - backup
+    - role: healthcheck
+      tags:
+        - healthcheck
+    - role: smoke
+      tags:
+        - smoke
+  vars_files:
+    - ../versions.yml

@@ -1,0 +1,29 @@
+---
+# vless removed from the protocols: stop Xray and drop its connection limits.
+# The config (REALITY key, clients) stays, so enabling vless again restores
+# every VLESS link already issued.
+- name: Xray | Look for Xray from an earlier deploy # noqa: command-instead-of-module - read-only diagnostics need exact output
+  ansible.builtin.command: systemctl is-enabled xray.service
+  register: xray_leftover
+  changed_when: false
+  failed_when: false
+
+- name: Xray | Stop and disable it
+  ansible.builtin.systemd:
+    name: xray.service
+    state: stopped
+    enabled: false
+  when: xray_leftover.stdout | default('') | trim == 'enabled'
+
+- name: Xray | Remove the connection limits
+  ansible.builtin.file:
+    path: /etc/nftables.d/45-corpvpn-xray.nft
+    state: absent
+  register: xray_guard_removed
+
+- name: Xray | Unload them # noqa: no-handler - ordered validation/promotion must run here
+  ansible.builtin.command: nft delete table inet corpvpn_xray
+  register: xray_guard_unloaded
+  changed_when: xray_guard_unloaded.rc == 0
+  failed_when: false
+  when: xray_guard_removed is changed

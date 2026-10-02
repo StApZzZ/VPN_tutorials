@@ -1,0 +1,45 @@
+# {{ ansible_managed }}
+# Xray for VLESS / REALITY, owned by CorpVPN: pinned release, own account, no
+# privileges. It listens on loopback only; nginx hands it TCP 443 connections
+# for the REALITY server name.
+[Unit]
+Description=Xray (CorpVPN VLESS / REALITY)
+Documentation=https://xtls.github.io/
+After=network-online.target nss-lookup.target corpvpn-nat.service
+Wants=network-online.target corpvpn-nat.service
+
+[Service]
+User={{ xray_user }}
+Group={{ xray_user }}
+Environment=XRAY_LOCATION_ASSET={{ xray_asset_dir }}
+ExecStart={{ vpn_panel_xray_bin_path }} run -config {{ vpn_panel_xray_base_config_path }}
+Restart=on-failure
+RestartSec=3
+# 23 = invalid config: restarting cannot help.
+RestartPreventExitStatus=23
+LimitNOFILE=1048576
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

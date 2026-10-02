@@ -1,17 +1,25 @@
+# {{ ansible_managed }}
 [Unit]
-Description=VPN Panel (FastAPI)
-After=network-online.target
+Description=CorpVPN (FastAPI)
+# The boot-time policy, the NAT table and the tunnels come first; the panel then
+# replaces the boot-time policy with the current access profiles.
+After=network-online.target nftables.service corpvpn-nat.service corpvpn-policy.service wg-quick@{{ vpn_panel_wg_interface }}.service awg-quick@{{ vpn_panel_awg_interface }}.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory={{ vpn_panel_app_dir }}
 EnvironmentFile={{ vpn_panel_app_dir }}/.env
-ExecStart=/usr/bin/env bash -lc '{{ vpn_panel_venv_dir }}/bin/python -m uvicorn main:app --host "${PANEL_HOST:-127.0.0.1}" --port "${PANEL_PORT:-8080}"'
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Loopback only, behind nginx; X-Forwarded-* is trusted from nginx alone. No
+# access log: nginx keeps one with one-shot link codes masked.
+ExecStart={{ vpn_panel_venv_dir }}/bin/python -m uvicorn main:app --host ${PANEL_HOST} --port ${PANEL_PORT} --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-access-log --ws none
 Restart=always
 RestartSec=3
 User=root
 Group=root
+
+{% include 'sandbox.conf.j2' %}
 
 [Install]
 WantedBy=multi-user.target

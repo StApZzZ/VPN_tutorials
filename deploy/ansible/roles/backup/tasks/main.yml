@@ -1,0 +1,89 @@
+---
+- name: Backup | age (encrypted archives)
+  ansible.builtin.apt:
+    name: age
+    state: present
+    lock_timeout: 600
+  when:
+    - vpn_panel_backup_enabled | bool
+    - vpn_panel_backup_age_recipients | length > 0
+
+- name: Backup | Archive directory
+  ansible.builtin.file:
+    path: "{{ vpn_panel_backup_archive_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: vpn_panel_backup_enabled | bool
+
+- name: Backup | Backup script
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/sbin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [corpvpn-backup, corpvpn-restore]
+  when: vpn_panel_backup_enabled | bool
+
+- name: Backup | Settings
+  ansible.builtin.copy:
+    dest: "{{ vpn_panel_config_dir }}/backup.json"
+    content: >-
+      {{ {'backup_dir': vpn_panel_backup_archive_dir,
+          'paths': vpn_panel_backup_paths,
+          'database_dir': vpn_panel_config_dir,
+          'keep': vpn_panel_backup_keep | int,
+          'change_backup_dir': vpn_panel_backup_dir,
+          'change_retention_days': vpn_panel_backup_change_retention_days | int,
+          'age_recipients': vpn_panel_backup_age_recipients,
+          'offhost_command': vpn_panel_backup_offhost_command,
+          'wg_public_key_file': vpn_panel_wg_public_key_path,
+          'awg_private_key_file': '/etc/amnezia/amneziawg/' ~ vpn_panel_awg_interface ~ '_priv',
+          'xray_config': vpn_panel_xray_base_config_path,
+          'xray_tool': '/usr/local/sbin/corpvpn-xray',
+          'state_file': vpn_panel_state_dir ~ '/backup.json',
+          'textfile_dir': vpn_panel_node_exporter_textfile_dir} | to_nice_json }}
+    owner: root
+    group: root
+    mode: "0600"
+  when: vpn_panel_backup_enabled | bool
+
+- name: Backup | Service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - corpvpn-backup.service
+    - corpvpn-backup.timer
+  notify: Backup | reload systemd
+  when: vpn_panel_backup_enabled | bool
+
+- name: Backup | Apply unit changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Backup | Timer running
+  ansible.builtin.systemd:
+    name: corpvpn-backup.timer
+    enabled: true
+    state: started
+  when: vpn_panel_backup_enabled | bool
+
+- name: Backup | Timer from an earlier deploy
+  ansible.builtin.stat:
+    path: /etc/systemd/system/corpvpn-backup.timer
+  register: backup_timer_unit
+  when: not (vpn_panel_backup_enabled | bool)
+
+- name: Backup | Timer off (vpn_panel_backup_enabled is false)
+  ansible.builtin.systemd:
+    name: corpvpn-backup.timer
+    enabled: false
+    state: stopped
+  when:
+    - not (vpn_panel_backup_enabled | bool)
+    - backup_timer_unit.stat.exists

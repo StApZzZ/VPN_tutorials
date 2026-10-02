@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+[Unit]
+Description=CorpVPN health check (panel, tunnels, policy, keys, certificate, backup)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/corpvpn-healthcheck --config {{ vpn_panel_config_dir }}/healthcheck.json
+UMask=0077
+PrivateTmp=yes

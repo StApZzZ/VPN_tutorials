@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+# Loads the access-profile policy the panel applied last (or, when there is none
+# or it does not load, a deny-all placeholder) BEFORE the tunnels come up, so a
+# reboot or a crash-looping panel never forwards VPN traffic without a policy.
+# The panel replaces the table with the current profiles when it starts.
+#
+# Not RemainAfterExit: nftables.service wants this unit, so every start or
+# restart of nftables (whose stock config begins with `flush ruleset`) loads the
+# policy again right after it.
+[Unit]
+Description=CorpVPN: load the access-profile policy (nft table inet corpvpn_policy)
+After=nftables.service
+Before=wg-quick@{{ vpn_panel_wg_interface }}.service awg-quick@{{ vpn_panel_awg_interface }}.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '/usr/sbin/nft -f {{ vpn_panel_nft_policy_path }} 2>/dev/null || { echo "no loadable {{ vpn_panel_nft_policy_path }}: VPN clients are blocked until the panel loads the policy" >&2; exec /usr/sbin/nft -f {{ vpn_panel_nft_policy_placeholder }}; }'
+
+[Install]
+WantedBy=multi-user.target nftables.service

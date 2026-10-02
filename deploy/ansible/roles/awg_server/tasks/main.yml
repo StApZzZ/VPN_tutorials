@@ -1,0 +1,15 @@
+---
+# Invariants:
+#  * never render awg0.conf wholesale: it holds the live peers; awg-peer-sync
+#    builds it from the [Interface] block below plus the wg0 peers;
+#  * never rotate the server key or the obfuscation params silently: every
+#    distributed client config depends on them;
+#  * never restart a running awg0 (drops all sessions).
+
+- name: AmneziaWG | Enabled
+  ansible.builtin.import_tasks: enabled.yml
+  when: "'awg' in vpn_panel_enabled_protocols"
+
+- name: AmneziaWG | Switched off
+  ansible.builtin.import_tasks: disabled.yml
+  when: "'awg' not in vpn_panel_enabled_protocols"

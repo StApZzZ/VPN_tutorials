@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""CorpVPN gateway backup (installed by the backup role as /usr/local/sbin/corpvpn-backup).
+
+One archive holds everything a rebuilt gateway needs to keep every issued client
+config working: the WireGuard, AmneziaWG and REALITY keys, the AmneziaWG
+obfuscation parameters, the panel's databases and settings, its .env and the
+TLS certificates. Restore it with deploy/ansible/restore.yml BEFORE the first
+deploy on a new host, so the roles find the keys and reuse them.
+
+* SQLite stores are copied with SQLite's online backup API (consistent while the
+  panel runs); their -wal / -shm files are never archived.
+* A manifest (inside the archive and next to it) lists every file with its
+  sha256 and the public keys, so a restore can be verified without secrets.
+* Optional: encryption to age recipients, a command that copies the archive
+  off the host, retention by count; changes the panel saved before each edit
+  (per-change backups) are pruned by age.
+* Any failure exits non-zero and records it for the health check / metrics.
+"""
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import fcntl
+import glob
+import hashlib
+import io
+import json
+import os
+import re
+import shlex
+import shutil
+import socket
+import sqlite3
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from datetime import datetime, timezone
+
+ARCHIVE = re.compile(r"^corpvpn-.+-(\d{8}T\d{6}Z)\.tar\.gz(\.age)?$")
+CHANGE_BACKUP = re.compile(r"^\d{8}_\d{6}$")
+EXCLUDE = ("*.db-wal", "*.db-shm", "*.db-journal", ".tmp_*", "*.tmp", "*.new")
+
+
+def log(message: str) -> None:
+    print(message, flush=True)
+
+
+def sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def snapshot_databases(directory: str, staging: str) -> dict[str, str]:
+    """Consistent copies of every SQLite store in directory: {live path: copy}."""
+    copies = {}
+    for path in sorted(glob.glob(os.path.join(directory, "*.db"))):
+        target = os.path.join(staging, os.path.basename(path))
+        source = sqlite3.connect(path, timeout=60)
+        try:
+            dest = sqlite3.connect(target)
+            try:
+                source.backup(dest)
+            finally:
+                dest.close()
+        finally:
+            source.close()
+        shutil.copymode(path, target)
+        copies[path] = target
+    return copies
+
+
+def public_keys(settings: dict) -> dict[str, str]:
+    """Public keys of the gateway, for checking a restore; empty when absent."""
+    keys = {}
+    wg = settings.get("wg_public_key_file", "")
+    if wg and os.path.exists(wg):
+        with open(wg, encoding="utf-8") as handle:
+            keys["wireguard"] = handle.read().strip()
+    awg = settings.get("awg_private_key_file", "")
+    if awg and os.path.exists(awg) and shutil.which("awg"):
+        with open(awg, "rb") as handle:
+            result = subprocess.run(["awg", "pubkey"], stdin=handle, capture_output=True, text=True, check=True)
+        keys["amneziawg"] = result.stdout.strip()
+    xray = settings.get("xray_config", "")
+    if xray and os.path.exists(xray) and os.path.exists(settings.get("xray_tool", "")):
+        result = subprocess.run([settings["xray_tool"], "pubkey", "--config", xray], capture_output=True,
+                                text=True, check=True)
+        keys["reality"] = json.loads(result.stdout)["public_key"]
+    return keys
+
+
+def excluded(name: str) -> bool:
+    return any(fnmatch.fnmatch(name, pattern) for pattern in EXCLUDE)
+
+
+def build_archive(settings: dict, archive: str, staging: str, created: str) -> dict:
+    copies = snapshot_databases(settings["database_dir"], staging) if settings.get("database_dir") else {}
+    manifest = {
+        "format": 1,
+        "host": socket.gethostname(),
+        "created": created,
+        "public_keys": public_keys(settings),
+        "files": {},
+    }
+    with tarfile.open(archive, "w:gz") as tar:
+        for root in settings["paths"]:
+            if not os.path.exists(root):
+                continue
+            walk = [(root, [], [])] if os.path.isfile(root) else os.walk(root)
+            for directory, dirs, files in walk:
+                dirs.sort()
+                if os.path.isfile(directory):
+                    entries = [directory]
+                else:
+                    tar.add(directory, arcname=directory.lstrip("/"), recursive=False)
+                    entries = [os.path.join(directory, f) for f in sorted(files)]
+                for path in entries:
+                    if excluded(os.path.basename(path)) or os.path.islink(path) and not os.path.exists(path):
+                        continue
+                    source = copies.get(path, path)
+                    arcname = path.lstrip("/")
+                    info = tar.gettarinfo(source, arcname=arcname)
+                    if path in copies:
+                        live = os.stat(path)
+                        info.uid, info.gid, info.mode = live.st_uid, live.st_gid, live.st_mode & 0o7777
+                    if info.isfile():
+                        manifest["files"][arcname] = sha256_file(source)
+                        with open(source, "rb") as handle:
+                            tar.addfile(info, handle)
+                    else:
+                        tar.addfile(info)
+        payload = json.dumps(manifest, indent=2, sort_keys=True).encode()
+        info = tarfile.TarInfo("corpvpn-manifest.json")
+        info.size, info.mode, info.mtime = len(payload), 0o600, int(time.time())
+        tar.addfile(info, io.BytesIO(payload))
+    return manifest
+
+
+def encrypt(archive: str, recipients: list[str]) -> str:
+    target = archive + ".age"
+    command = ["age", "--encrypt"]
+    for recipient in recipients:
+        command += ["-r", recipient]
+    subprocess.run(command + ["-o", target, archive], check=True)
+    os.unlink(archive)
+    return target
+
+
+def prune_archives(directory: str, keep: int) -> list[str]:
+    archives = sorted((n for n in os.listdir(directory) if ARCHIVE.match(n)),
+                      key=lambda n: ARCHIVE.match(n).group(1))
+    removed = []
+    for name in archives[:-keep] if keep > 0 else []:
+        for path in (os.path.join(directory, name),
+                     os.path.join(directory, ARCHIVE.sub(r"corpvpn-manifest-\1.json", name))):
+            if os.path.exists(path):
+                os.unlink(path)
+        removed.append(name)
+    return removed
+
+
+def prune_change_backups(directory: str, days: int, now: float) -> int:
+    """The panel saves wg0.conf and the client keys before each edit, and the Xray
+    config before each apply; drop copies older than `days`."""
+    if days <= 0 or not os.path.isdir(directory):
+        return 0
+    cutoff, removed = now - days * 86400, 0
+    for name in os.listdir(directory):
+        path = os.path.join(directory, name)
+        if CHANGE_BACKUP.match(name) and os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+            shutil.rmtree(path)
+            removed += 1
+    xray = os.path.join(directory, "xray")
+    if os.path.isdir(xray):
+        for name in os.listdir(xray):
+            path = os.path.join(xray, name)
+            if name.endswith(".bak") and os.path.getmtime(path) < cutoff:
+                os.unlink(path)
+                removed += 1
+    return removed
+
+
+def write_status(settings: dict, ok: bool, detail: dict) -> None:
+    now = int(time.time())
+    state_file = settings.get("state_file", "")
+    if state_file:
+        previous = {}
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, encoding="utf-8") as handle:
+                    previous = json.load(handle)
+            except (OSError, ValueError):
+                previous = {}
+        state = {**previous, "last_run": now, "last_ok": ok, **detail}
+        if ok:
+            state["last_success"] = now
+        os.makedirs(os.path.dirname(state_file), exist_ok=True)
+        with open(state_file + ".tmp", "w", encoding="utf-8") as handle:
+            json.dump(state, handle, indent=2)
+        os.replace(state_file + ".tmp", state_file)
+    textfile_dir = settings.get("textfile_dir", "")
+    if textfile_dir and os.path.isdir(textfile_dir):
+        lines = ["# HELP corpvpn_backup_last_run_ok 1 when the last backup run succeeded.",
+                 "# TYPE corpvpn_backup_last_run_ok gauge",
+                 f"corpvpn_backup_last_run_ok {1 if ok else 0}"]
+        if ok:
+            lines += ["# HELP corpvpn_backup_last_success_timestamp_seconds Time of the last good backup.",
+                      "# TYPE corpvpn_backup_last_success_timestamp_seconds gauge",
+                      f"corpvpn_backup_last_success_timestamp_seconds {now}"]
+        target = os.path.join(textfile_dir, "corpvpn_backup.prom")
+        with open(target + ".tmp", "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        os.replace(target + ".tmp", target)
+
+
+def run(settings: dict) -> dict:
+    directory = settings["backup_dir"]
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    created = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    name = f"corpvpn-{socket.gethostname()}-{created}"
+    staging = tempfile.mkdtemp(prefix=".staging-", dir=directory)
+    try:
+        archive = os.path.join(directory, name + ".tar.gz")
+        lock_dir = settings.get("database_dir")
+        if lock_dir:
+            with open(os.path.join(lock_dir, ".corpvpn-backend.lock"), "a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                manifest = build_archive(settings, archive, staging, created)
+        else:
+            manifest = build_archive(settings, archive, staging, created)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    os.chmod(archive, 0o600)
+    if settings.get("age_recipients"):
+        archive = encrypt(archive, settings["age_recipients"])
+        os.chmod(archive, 0o600)
+    manifest_path = os.path.join(directory, f"corpvpn-manifest-{created}.json")
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
+    os.chmod(manifest_path, 0o600)
+    log(f"archive {archive}: {len(manifest['files'])} files, public keys {sorted(manifest['public_keys'])}")
+
+    command = settings.get("offhost_command", "")
+    if command:
+        argv = [archive if part == "{archive}" else part.replace("{archive}", archive)
+                for part in shlex.split(command)]
+        subprocess.run(argv, check=True)
+        log("off-host copy done")
+
+    removed = prune_archives(directory, int(settings.get("keep", 14)))
+    pruned = prune_change_backups(settings.get("change_backup_dir", ""),
+                                  int(settings.get("change_retention_days", 30)), time.time())
+    if removed or pruned:
+        log(f"retention: {len(removed)} old archives, {pruned} per-change backups removed")
+    return {"last_archive": archive, "last_size": os.path.getsize(archive)}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="CorpVPN gateway backup")
+    parser.add_argument("--config", default="/etc/vpn-panel/backup.json")
+    args = parser.parse_args(argv)
+    with open(args.config, encoding="utf-8") as handle:
+        settings = json.load(handle)
+    try:
+        detail = run(settings)
+    except Exception as exc:  # noqa: BLE001 - any failure must fail the unit and be recorded
+        print(f"backup failed: {exc}", file=sys.stderr)
+        write_status(settings, False, {"last_error": str(exc)})
+        return 1
+    write_status(settings, True, {**detail, "last_error": ""})
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

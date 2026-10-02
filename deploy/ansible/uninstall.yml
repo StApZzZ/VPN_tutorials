@@ -1,0 +1,106 @@
+---
+- name: Remove CorpVPN services while preserving credentials by default
+  hosts: management:site_connector:ungrouped
+  become: true
+  gather_facts: false
+  vars:
+    corpvpn_uninstall_purge: false
+  tasks:
+    - name: Installed services
+      ansible.builtin.service_facts:
+    - name: Installed service and timer units
+      ansible.builtin.command:
+        argv: [systemctl, list-unit-files, --type=service, --type=timer, --no-legend, --no-pager]
+      register: corpvpn_installed_units
+      changed_when: false
+    - name: Stop only CorpVPN units
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: false
+        state: stopped
+      loop:
+        - corpvpn-backup.service
+        - corpvpn-healthcheck.service
+        - corpvpn-docker-user.service
+        - corpvpn-backup.timer
+        - corpvpn-healthcheck.timer
+        - vpn-panel-directory-sync.timer
+        - vpn-panel-directory-sync.service
+        - vpn-panel.service
+        - xray.service
+        - awg-quick@awg0.service
+        - wg-quick@wg0.service
+        - wg-quick@wg-site.service
+        - corpvpn-nat.service
+        - corpvpn-policy.service
+      when: item in corpvpn_installed_units.stdout.split()
+    - name: Remove CorpVPN service and nginx configuration
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/nginx/sites-enabled/vpn-panel.conf
+        - /etc/nginx/sites-available/vpn-panel.conf
+        - /etc/nginx/modules-enabled/90-corpvpn-stream.conf
+        - /etc/systemd/system/corpvpn-docker-user.service
+        - /usr/local/sbin/corpvpn-docker-user
+        - /etc/sysctl.d/99-zz-corpvpn-forward.conf
+        - /etc/sysctl.d/99-zz-corpvpn-site-link.conf
+        - /etc/sysctl.d/60-corpvpn-forward.conf
+        - /etc/systemd/system/vpn-panel.service
+        - /etc/systemd/system/vpn-panel-directory-sync.service
+        - /etc/systemd/system/vpn-panel-directory-sync.timer
+        - /etc/systemd/system/corpvpn-backup.service
+        - /etc/systemd/system/corpvpn-backup.timer
+        - /etc/systemd/system/corpvpn-healthcheck.service
+        - /etc/systemd/system/corpvpn-healthcheck.timer
+        - /etc/systemd/system/corpvpn-nat.service
+        - /etc/systemd/system/corpvpn-policy.service
+        - /etc/systemd/system/xray.service
+        - /etc/systemd/system/awg-quick@.service
+        - /etc/systemd/system/wg-quick@wg0.service.d/10-corpvpn.conf
+        - /etc/systemd/system/awg-quick@awg0.service.d/10-corpvpn.conf
+        - /etc/nftables.d/40-corpvpn-nat.nft
+        - /etc/nftables.d/41-corpvpn-guard.nft
+        - /etc/nftables.d/45-corpvpn-xray.nft
+        - /etc/nftables.d/50-corpvpn-policy.nft
+    - name: Reload unit definitions
+      ansible.builtin.systemd:
+        daemon_reload: true
+    - name: Inspect remaining CorpVPN tables
+      ansible.builtin.command:
+        argv: [nft, list, table, inet, "{{ item }}"]
+      loop: [corpvpn_nat, corpvpn_guard, corpvpn_xray, corpvpn_policy, corpvpn_site]
+      register: uninstall_tables
+      changed_when: false
+      failed_when: false
+    - name: Remove only existing CorpVPN tables
+      ansible.builtin.command:
+        argv: [nft, delete, table, inet, "{{ item.item }}"]
+      loop: "{{ uninstall_tables.results }}"
+      when: item.rc == 0
+      changed_when: true
+    - name: Reload shared nginx after removing the CorpVPN site
+      ansible.builtin.systemd:
+        name: nginx.service
+        state: reloaded
+      when: ansible_facts.services.get('nginx.service', {}).get('state') == 'running'
+    - name: Purge credentials only when explicitly requested
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /opt/vpn-panel
+        - /etc/vpn-panel
+        - /etc/xray
+        - /etc/amnezia/amneziawg
+        - /etc/wireguard/wg0.conf
+        - /etc/wireguard/wg0_private.key
+        - /etc/wireguard/wg0_public.key
+        - /etc/wireguard/clientsTable
+        - /etc/wireguard/clientsPrivateKeys.json
+        - /etc/wireguard/wg-site.conf
+        - /etc/wireguard/wg-site.key
+        - /etc/wireguard/wg-site.psk
+        - /etc/wireguard/wg-site.nft
+      when: corpvpn_uninstall_purge | bool

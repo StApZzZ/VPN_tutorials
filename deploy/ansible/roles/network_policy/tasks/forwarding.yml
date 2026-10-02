@@ -1,0 +1,44 @@
+---
+# IPv4 forwarding that survives reboots and hardened images. Used by the gateway
+# (network_policy) and by the site connector.
+- name: Forwarding | Persist net.ipv4.ip_forward = 1
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/{{ corpvpn_forward_sysctl_file }}
+    content: |
+      # {{ corpvpn_forward_comment }}
+      # 99-zz: systemd-sysctl applies files in lexical order, so this one wins over
+      # distribution and hardening-baseline files that turn forwarding off.
+      net.ipv4.ip_forward = 1
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Forwarding | Remove the file earlier deploys wrote
+  ansible.builtin.file:
+    path: /etc/sysctl.d/{{ corpvpn_forward_legacy_file }}
+    state: absent
+
+- name: Forwarding | Current value
+  ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+  register: corpvpn_forward_now
+  changed_when: false
+
+- name: Forwarding | Enable it now
+  ansible.builtin.command: sysctl -w net.ipv4.ip_forward=1
+  changed_when: true
+  when: corpvpn_forward_now.stdout | trim != '1'
+
+- name: Forwarding | Other sysctl files that turn it off
+  ansible.builtin.shell: >-
+    grep -lsE '^[[:space:]]*net[./]ipv4[./]ip_forward[[:space:]]*=[[:space:]]*0'
+    /etc/sysctl.conf /etc/sysctl.d/*.conf /run/sysctl.d/*.conf /usr/lib/sysctl.d/*.conf || true
+  register: corpvpn_forward_off
+  changed_when: false
+
+- name: Forwarding | Warn about them
+  ansible.builtin.debug:
+    msg: >-
+      These files set net.ipv4.ip_forward = 0: {{ corpvpn_forward_off.stdout_lines | join(', ') }}.
+      /etc/sysctl.d/{{ corpvpn_forward_sysctl_file }} is applied after them and the CorpVPN units
+      switch forwarding on when they start, but remove the setting to avoid surprises.
+  when: corpvpn_forward_off.stdout_lines | length > 0

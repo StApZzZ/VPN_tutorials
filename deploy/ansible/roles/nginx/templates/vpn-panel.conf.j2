@@ -1,15 +1,186 @@
-server {
-    listen 80 default_server;
-{% if vpn_panel_nginx_ipv6_enabled %}
-    listen [::]:80 default_server;
+{% set vless = 'vless' in vpn_panel_enabled_protocols %}
+{% set tls_ready = vpn_panel_tls_mode != 'none' and panel_ssl_ready | default(false) | bool %}
+{% set trusted = vpn_panel_trusted_proxy_cidrs | default([]) %}
+# {{ ansible_managed }}
+# Panel vhost: {{ nginx_server_name }} -> panel app ({{ vpn_panel_panel_host }}:{{ vpn_panel_panel_port }}), TLS: {{ vpn_panel_tls_mode }}.
+{% if vless %}
+# TCP 443 belongs to the stream router (modules-enabled/90-corpvpn-stream.conf):
+# it hands this TLS server every name but the REALITY one, over loopback with the
+# client address in a PROXY protocol header.
 {% endif %}
-    server_name {{ vpn_panel_server_name }};
+#
+# Static assets. The panel app serves /static itself (StaticFiles mount), so this
+# stays a pure reverse proxy — do NOT turn it into a filesystem root/alias, the
+# app directory is not guaranteed readable by the nginx user.
+#
+# Cache policy: `no-cache` — the browser may store the response but MUST
+# revalidate before reusing it. With the app's ETag that costs one conditional
+# GET per asset per page load and answers 304 with an empty body. The bare,
+# unversioned URLs (login.html, bookmarks, curl) stay reachable next to the
+# ?v=<content-hash> ones, so freezing either would pin an old app.js; one 304
+# per asset is not worth that risk.
 
-    location / {
+limit_req_zone $binary_remote_addr zone=corpvpn_signin:10m rate={{ vpn_panel_nginx_signin_rate }};
+limit_req_zone $binary_remote_addr zone=corpvpn_links:10m rate={{ vpn_panel_nginx_links_rate }};
+limit_req_zone $binary_remote_addr zone=corpvpn_api:10m rate={{ vpn_panel_nginx_api_rate }};
+
+# One-shot config-link codes (/awg/<code>) are bearer secrets: the access log
+# records them masked, in the request line and in the referer.
+map $request_uri $corpvpn_log_uri {
+    "~^/awg/[^/?]+(?<corpvpn_uri_rest>.*)$" "/awg/<code>$corpvpn_uri_rest";
+    "~^/invite/[^/?]+" "/invite/<token>";
+    "~^/auth/oidc/callback" "/auth/oidc/callback";
+    default $request_uri;
+}
+map $http_referer $corpvpn_log_referer {
+    "~^(?<corpvpn_referer_head>.*?/awg/)[^/?#]+" "${corpvpn_referer_head}<code>";
+    "~^.*?/invite/" "/invite/<token>";
+    "~^.*?/auth/oidc/callback" "/auth/oidc/callback";
+    default $http_referer;
+}
+log_format corpvpn '$remote_addr - $remote_user [$time_local] "$request_method $corpvpn_log_uri $server_protocol" '
+                   '$status $body_bytes_sent "$corpvpn_log_referer" "$http_user_agent"';
+{% if trusted %}
+
+# The trusted proxies' X-Forwarded-Proto, or the scheme of the hop itself.
+map $http_x_forwarded_proto $corpvpn_forwarded_proto {
+    default $http_x_forwarded_proto;
+    "" $scheme;
+}
+{% endif %}
+{% macro security_headers(hsts) %}
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "strict-origin" always;
+        add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+{% if hsts %}
+        add_header Strict-Transport-Security "max-age=31536000" always;
+{% endif %}
+{% endmacro %}
+{% macro proxy(forwarded_proto) %}
         proxy_pass http://{{ vpn_panel_panel_host }}:{{ vpn_panel_panel_port }};
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        # $remote_addr is the real client (PROXY protocol / trusted proxies); the
+        # panel trusts this header from nginx only.
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto {{ forwarded_proto }};
+{% endmacro %}
+{% macro panel(forwarded_proto, hsts) %}
+    server_tokens off;
+    access_log /var/log/nginx/access.log corpvpn;
+    limit_req_status 429;
+{{ security_headers(hsts) }}
+    location /static/ {
+{{ proxy(forwarded_proto) }}
+        add_header Cache-Control "no-cache";
+{{ security_headers(hsts) }}
+    }
+
+    location = /login {
+        limit_req zone=corpvpn_signin burst=20 nodelay;
+{{ proxy(forwarded_proto) }}
+    }
+
+    location /auth/ {
+        limit_req zone=corpvpn_signin burst=20 nodelay;
+{{ proxy(forwarded_proto) }}
+    }
+
+    location /invite/ {
+        limit_req zone=corpvpn_signin burst=10 nodelay;
+{{ proxy(forwarded_proto) }}
+    }
+
+    location /awg/ {
+        limit_req zone=corpvpn_links burst=10 nodelay;
+{{ proxy(forwarded_proto) }}
+    }
+
+    location /api/ {
+        limit_req zone=corpvpn_api burst=40 nodelay;
+{{ proxy(forwarded_proto) }}
+    }
+
+    location / {
+{{ proxy(forwarded_proto) }}
+    }
+{% endmacro %}
+
+server {
+    listen 80;
+{% if vpn_panel_nginx_ipv6_enabled | bool %}
+    listen [::]:80;
+{% endif %}
+    server_name {{ nginx_server_name }};
+{% if vpn_panel_tls_mode == 'letsencrypt' %}
+
+    location ^~ /.well-known/acme-challenge/ {
+        root {{ vpn_panel_nginx_acme_root }};
+        default_type text/plain;
+    }
+{% endif %}
+{% if tls_ready %}
+    server_tokens off;
+    access_log /var/log/nginx/access.log corpvpn;
+
+    location / {
+        return 301 https://$host$request_uri;
     }
 }
+{% elif vpn_panel_tls_mode != 'none' %}
+    # No certificate yet: nothing but ACME challenges until certbot has one.
+    server_tokens off;
+
+    location / {
+        return 503;
+    }
+}
+{% else %}
+    # Plain HTTP for a TLS reverse proxy in front (TLS_MODE=none).
+{% if trusted %}
+{% for cidr in trusted %}
+    allow {{ cidr }};
+    set_real_ip_from {{ cidr }};
+{% endfor %}
+    allow 127.0.0.1;
+    deny all;
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+{% endif %}
+{{ panel('$corpvpn_forwarded_proto' if trusted else '$scheme', false) }}
+}
+{% endif %}
+{% if tls_ready %}
+
+server {
+{% if vless %}
+    listen {{ vpn_panel_xray_listen }}:{{ vpn_panel_nginx_panel_tls_port }} ssl proxy_protocol;
+    set_real_ip_from {{ vpn_panel_xray_listen }};
+    real_ip_header proxy_protocol;
+{% else %}
+    listen 443 ssl;
+{% if vpn_panel_nginx_ipv6_enabled | bool %}
+    listen [::]:443 ssl;
+{% endif %}
+{% for cidr in trusted %}
+    set_real_ip_from {{ cidr }};
+{% endfor %}
+{% if trusted %}
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+{% endif %}
+{% endif %}
+    server_name {{ nginx_server_name }};
+
+    ssl_certificate     {{ vpn_panel_ssl_cert_path }};
+    ssl_certificate_key {{ vpn_panel_ssl_key_path }};
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+{{ panel('$scheme', vpn_panel_tls_mode in ['letsencrypt', 'custom']) }}
+}
+{% endif %}

@@ -1,0 +1,29 @@
+---
+# WireGuard link between the gateway (server A, group "management") and the
+# site connector (server B, group "site_connector") inside the corporate
+# perimeter. B dials A, so B needs outbound UDP only. Corporate ranges are
+# routed from A through the link; B masquerades them into its LAN.
+
+site_link_iface: "{{ vpn_panel_site_link_iface }}"
+site_link_port: "{{ vpn_panel_site_link_port }}"
+site_link_gateway_address: "{{ vpn_panel_site_link_network | corpvpn_host_cidr(1) }}"
+site_link_connector_address: "{{ vpn_panel_site_link_network | corpvpn_host_cidr(2) }}"
+site_link_mtu: 1380
+site_link_keepalive: 25
+# Ranges routed through the link (default: the panel's CORP_CIDRS).
+site_link_corp_cidrs: "{{ vpn_panel_corp_cidrs }}"
+# VPN client pools B must route back through the link (wg0 and awg0).
+site_link_client_nets: >-
+  {{ [vpn_panel_wg_network]
+     + ([vpn_panel_awg_network] if 'awg' in vpn_panel_enabled_protocols else []) }}
+# Address B dials. Default: the gateway's inventory address.
+site_link_gateway_endpoint: ""
+# B's interface towards the corporate LAN. Default: its default-route interface.
+site_link_lan_iface: ""
+# Internal DNS domains (quickstart CORP_DOMAINS). On the gateway, names under
+# them are resolved by the corporate resolvers (vpn_panel_dns_servers) through
+# the link, so the panel reaches an internal LDAP server or IdP by name.
+vpn_panel_corp_domains: []
+# true: accept corporate ranges that contain the gateway's own address or
+# default router (only when those really are reachable through the office).
+vpn_panel_allow_corp_overlap: false

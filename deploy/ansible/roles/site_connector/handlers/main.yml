@@ -1,0 +1,5 @@
+---
+- name: Restart site link
+  ansible.builtin.systemd:
+    name: wg-quick@{{ site_link_iface }}
+    state: restarted

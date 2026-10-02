@@ -1,0 +1,213 @@
+---
+- name: AmneziaWG | Build dependencies
+  ansible.builtin.apt:
+    name: [git, build-essential, make, python3]
+    state: present
+    lock_timeout: 600
+    policy_rc_d: 101
+
+- name: AmneziaWG | Go architecture
+  ansible.builtin.set_fact:
+    awg_server_go_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_architecture] | default('') }}"
+
+- name: AmneziaWG | Supported architecture
+  ansible.builtin.assert:
+    that: awg_server_go_arch in corpvpn_go_sha256
+    fail_msg: >-
+      deploy/versions.yml pins no Go toolchain for {{ ansible_architecture }}; AmneziaWG is built on
+      x86_64 and aarch64.
+    quiet: true
+
+- name: "AmneziaWG | Check interface status: {{ awg_server_iface }}"
+  ansible.builtin.command: ip link show {{ awg_server_iface }}
+  register: awg_server_iface_present
+  failed_when: false
+  changed_when: false
+
+- name: AmneziaWG | Last build
+  ansible.builtin.slurp:
+    src: "{{ awg_server_build_stamp }}"
+  register: awg_server_stamp
+  failed_when: false
+
+- name: AmneziaWG | Installed binaries
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /usr/local/bin/amneziawg-go
+    - /usr/bin/awg
+    - /usr/bin/awg-quick
+  register: awg_server_binaries
+
+- name: AmneziaWG | Rebuild when a pin changed or a binary is missing
+  ansible.builtin.set_fact:
+    awg_server_needs_build: >-
+      {{ (awg_server_stamp.content | default('') | b64decode | trim) != awg_server_build_id
+         or (awg_server_binaries.results | rejectattr('stat.exists') | list | length > 0) }}
+
+- name: AmneziaWG | Build
+  ansible.builtin.import_tasks: build.yml
+  when: awg_server_needs_build | bool
+
+- name: AmneziaWG | Config directory
+  ansible.builtin.file:
+    path: "{{ awg_server_conf_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# --- server key: generated once, kept beside the config -----------------------
+- name: AmneziaWG | Generate the server key (once)
+  ansible.builtin.shell: umask 077 && awg genkey > {{ awg_server_conf_dir }}/{{ awg_server_iface }}_priv
+  args:
+    creates: "{{ awg_server_conf_dir }}/{{ awg_server_iface }}_priv"
+
+- name: AmneziaWG | Public key
+  ansible.builtin.shell: awg pubkey < {{ awg_server_conf_dir }}/{{ awg_server_iface }}_priv
+  register: awg_server_pub
+  changed_when: false
+  tags: [always]
+
+- name: AmneziaWG | Refuse to continue when awg0 runs a different key
+  ansible.builtin.shell: |
+    ip link show {{ awg_server_iface }} >/dev/null 2>&1 || { echo NO_IFACE; exit 0; }
+    awg show {{ awg_server_iface }} public-key 2>/dev/null || true
+  register: awg_server_live_pub
+  changed_when: false
+
+- name: AmneziaWG | Key check
+  ansible.builtin.assert:
+    that:
+      - awg_server_live_pub.stdout | trim in ['NO_IFACE', '', awg_server_pub.stdout | trim]
+    fail_msg: >-
+      {{ awg_server_iface }} is running with public key {{ awg_server_live_pub.stdout | trim }}, but the
+      key file gives {{ awg_server_pub.stdout | trim }}. Reconcile before deploying: rewriting the
+      config would break every client at the next restart.
+    quiet: true
+
+# --- obfuscation params: generated once, never changed by a re-run -----------
+- name: AmneziaWG | Keep explicitly configured obfuscation params
+  ansible.builtin.copy:
+    dest: "{{ awg_server_conf_dir }}/obfuscation.json"
+    content: "{{ awg_server_obfuscation | to_nice_json }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+    force: false
+  when: awg_server_obfuscation | length > 0
+
+- name: AmneziaWG | Obfuscation generator
+  ansible.builtin.copy:
+    src: awg-gen-obfuscation
+    dest: /usr/local/sbin/awg-gen-obfuscation
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: AmneziaWG | Generate obfuscation params (first install)
+  ansible.builtin.command:
+    cmd: /usr/local/sbin/awg-gen-obfuscation {{ awg_server_conf_dir }}/obfuscation.json
+    creates: "{{ awg_server_conf_dir }}/obfuscation.json"
+
+- name: AmneziaWG | Read obfuscation params
+  ansible.builtin.slurp:
+    src: "{{ awg_server_conf_dir }}/obfuscation.json"
+  register: awg_server_obfs_raw
+  tags: [always]
+
+- name: AmneziaWG | Facts for the panel (client configs must carry the same values)
+  ansible.builtin.set_fact:
+    awg_server_obfuscation_effective: "{{ awg_server_obfs_raw.content | b64decode | from_json }}"
+    awg_server_public_key: "{{ awg_server_pub.stdout | trim }}"
+  tags: [always]
+
+- name: AmneziaWG | Warn when configured params differ from the ones in use
+  ansible.builtin.debug:
+    msg: >-
+      awg_server_obfuscation differs from {{ awg_server_conf_dir }}/obfuscation.json; the file wins.
+      Changing obfuscation invalidates every issued AmneziaWG config: to rotate, delete the file, re-run,
+      and re-issue all AmneziaWG configs (the panel re-seeds its settings from the new file).
+  when:
+    - awg_server_obfuscation | length > 0
+    - awg_server_obfuscation != awg_server_obfuscation_effective
+
+# --- interface block + peer mirror ------------------------------------------
+- name: AmneziaWG | Peer mirror script
+  ansible.builtin.template:
+    src: awg-peer-sync.py.j2
+    dest: /usr/local/sbin/awg-peer-sync
+    owner: root
+    group: root
+    mode: "0755"
+
+# Before the interface block is rendered: a lost or regenerated obfuscation.json
+# must never reach the running awg0 (the peer mirror applies the block live).
+- name: "AmneziaWG | Check running obfuscation: {{ awg_server_iface }}"
+  ansible.builtin.command: /usr/local/sbin/awg-peer-sync --check-obfuscation {{ awg_server_conf_dir }}/obfuscation.json
+  register: awg_server_drift
+  changed_when: false
+  failed_when: awg_server_drift.rc != 0
+  when: awg_server_iface_present.rc == 0
+
+- name: AmneziaWG | Interface block (awg-peer-sync appends the peers)
+  ansible.builtin.template:
+    src: awg0.iface.j2
+    dest: "{{ awg_server_conf_dir }}/{{ awg_server_iface }}.iface"
+    owner: root
+    group: root
+    mode: "0600"
+  register: awg_server_iface_block
+
+- name: AmneziaWG | Assemble awg0.conf from the interface block and the wg0 peers
+  ansible.builtin.command: /usr/local/sbin/awg-peer-sync --no-apply
+  changed_when: false
+
+- name: "AmneziaWG | Wait for CorpVPN tables: {{ awg_server_iface }}"
+  ansible.builtin.include_role:
+    name: wg_server
+    tasks_from: tunnel_dropin.yml
+  vars:
+    wg_server_dropin_unit: "awg-quick@{{ awg_server_iface }}.service"
+
+- name: AmneziaWG | Peer mirror service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - awg-peer-sync.service
+    - awg-peer-sync.timer
+  notify: AmneziaWG | reload systemd
+
+- name: AmneziaWG | Apply pending unit changes
+  ansible.builtin.meta: flush_handlers
+
+- name: AmneziaWG | Enable awg-quick@{{ awg_server_iface }}
+  ansible.builtin.systemd:
+    name: awg-quick@{{ awg_server_iface }}
+    enabled: true
+
+- name: AmneziaWG | Start awg-quick@{{ awg_server_iface }}
+  ansible.builtin.systemd:
+    name: awg-quick@{{ awg_server_iface }}
+    state: started
+    no_block: true
+  when: awg_server_iface_present.rc != 0
+
+- name: AmneziaWG | Interface parameters changed on a running awg0
+  ansible.builtin.debug:
+    msg: >-
+      {{ awg_server_iface }}.iface changed while the interface is up. Peers sync live, but port / MTU /
+      address changes need `systemctl restart awg-quick@{{ awg_server_iface }}` (drops sessions).
+  when:
+    - awg_server_iface_block is changed
+    - awg_server_iface_present.rc == 0
+
+- name: AmneziaWG | Enable the peer mirror timer
+  ansible.builtin.systemd:
+    name: awg-peer-sync.timer
+    enabled: true
+    state: started

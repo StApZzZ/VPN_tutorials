@@ -1,0 +1,25 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+# Baseline for VPN clients, whatever their access profile allows: no link-local
+# (cloud metadata services) or other always-denied ranges{% if not (vpn_panel_client_to_client | bool) %}, and no traffic
+# between VPN clients{% endif %}. Own table, replaced atomically; it only drops.
+# Matches the client tunnels only: the site link (split mode) is not a client.
+{% set clients %}{% for i in wg_server_client_ifaces %}"{{ i }}"{{ ", " if not loop.last else "" }}{% endfor %}{% endset %}
+table inet corpvpn_guard
+delete table inet corpvpn_guard
+table inet corpvpn_guard {
+    set deny_v4 {
+        type ipv4_addr
+        flags interval
+        auto-merge
+        elements = { {{ wg_server_guard_deny_v4 | join(', ') }} }
+    }
+
+    chain forward {
+        type filter hook forward priority filter - 10; policy accept;
+        iifname { {{ clients }} } ip daddr @deny_v4 counter drop
+{% if not (vpn_panel_client_to_client | bool) %}
+        iifname { {{ clients }} } oifname { {{ clients }} } counter drop
+{% endif %}
+    }
+}

@@ -1,0 +1,28 @@
+---
+# WireGuard server (wg0) on the gateway. The panel owns the peer list in
+# wg0.conf; this role creates the interface once and never rewrites the file.
+wg_server_iface: "{{ vpn_panel_wg_interface }}"
+wg_server_port: "{{ vpn_panel_wg_port }}"
+wg_server_network: "{{ vpn_panel_wg_network }}"
+wg_server_ip: "{{ vpn_panel_wg_server_ip }}"
+wg_server_mtu: 1420
+wg_server_conf: "/etc/wireguard/{{ wg_server_iface }}.conf"
+wg_server_public_key_path: "{{ vpn_panel_wg_public_key_path }}"
+
+# NAT for VPN clients: masquerade everything that leaves through a physical
+# interface (internet, and a directly attached office LAN in single mode).
+# Traffic into the tunnels and the site link keeps the client address.
+wg_server_client_nets: >-
+  {{ [wg_server_network]
+     + ([vpn_panel_awg_network] if 'awg' in vpn_panel_enabled_protocols else []) }}
+wg_server_nat_exclude_ifaces: >-
+  {{ [wg_server_iface, vpn_panel_awg_interface, vpn_panel_site_link_iface] }}
+
+# Client baseline (table inet corpvpn_guard), applied whatever the profile says.
+wg_server_client_ifaces: "{{ [wg_server_iface, vpn_panel_awg_interface] }}"
+# Link-local covers the metadata services of AWS, Azure, GCP and OpenStack;
+# 100.100.100.200 is Alibaba Cloud's.
+wg_server_guard_deny_v4: >-
+  {{ ['169.254.0.0/16', '100.100.100.200/32']
+     + (vpn_panel_forward_deny_cidrs | reject('search', ':') | list)
+     + ([vpn_panel_site_link_network] if vpn_panel_split_mode | bool else []) }}

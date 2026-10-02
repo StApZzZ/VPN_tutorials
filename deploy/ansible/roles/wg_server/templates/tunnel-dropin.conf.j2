@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# The tunnel comes up only after CorpVPN's nftables tables are loaded: NAT and the
+# client baseline (corpvpn-nat) and the access-profile policy (corpvpn-policy).
+[Unit]
+Wants=corpvpn-nat.service corpvpn-policy.service
+After=corpvpn-nat.service corpvpn-policy.service

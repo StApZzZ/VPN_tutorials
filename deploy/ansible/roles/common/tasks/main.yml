@@ -1,12 +1,37 @@
-- name: Common | Verify supported OS family
-  ansible.builtin.assert:
-    that:
-      - ansible_os_family == "Debian"
-    fail_msg: "This automation currently supports Debian-family hosts only."
+---
+# Fresh cloud VMs run cloud-init and unattended-upgrades in their first minutes;
+# both hold the dpkg lock. Wait for cloud-init, and let apt wait for the lock.
+- name: Common | Look for cloud-init
+  ansible.builtin.stat:
+    path: /usr/bin/cloud-init
+  register: common_cloud_init_bin
+
+- name: Common | Wait until cloud-init has finished
+  ansible.builtin.command: cloud-init status --wait
+  register: common_cloud_init
+  changed_when: false
+  # 2 = finished with recoverable errors; the host is usable either way.
+  failed_when: common_cloud_init.rc not in [0, 2]
+  when: common_cloud_init_bin.stat.exists
+
+# The only cache refresh of a run; the other roles install with the cache as is.
+- name: Common | Refresh the package index (at most hourly)
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 600
 
 - name: Common | Install system packages
   ansible.builtin.apt:
     name: "{{ vpn_panel_system_packages }}"
     state: present
-    update_cache: true
+    lock_timeout: 600
     policy_rc_d: 101
+
+- name: Common | CorpVPN state directory
+  ansible.builtin.file:
+    path: "{{ vpn_panel_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"

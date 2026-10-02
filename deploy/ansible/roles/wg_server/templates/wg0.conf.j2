@@ -1,0 +1,7 @@
+# {{ ansible_managed }} — written once on a fresh host.
+# The panel appends and edits the [Peer] blocks below; do not re-render.
+[Interface]
+PrivateKey = {{ wg_server_new_key.content | b64decode | trim }}
+Address = {{ wg_server_ip }}/{{ wg_server_network.split('/')[1] }}
+ListenPort = {{ wg_server_port }}
+MTU = {{ wg_server_mtu }}

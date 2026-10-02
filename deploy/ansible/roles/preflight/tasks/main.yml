@@ -1,0 +1,60 @@
+---
+# Checks that need no change on the host: a run that would fail halfway stops
+# here instead, before anything is installed.
+
+- name: Preflight | Supported operating system
+  ansible.builtin.assert:
+    that:
+      - (ansible_distribution == 'Debian' and ansible_distribution_major_version in ['12', '13']) or (ansible_distribution == 'Ubuntu' and
+        ansible_distribution_version in ['22.04', '24.04'])
+      - ansible_python.version.major == 3 and ansible_python.version.minor >= 10
+    fail_msg: >-
+      CorpVPN supports Debian 12/13 and Ubuntu 22.04/24.04 with Python 3.10 or newer; this host runs
+      {{ ansible_distribution }} {{ ansible_distribution_version }} with Python
+      {{ ansible_python.version.major }}.{{ ansible_python.version.minor }}.
+    quiet: true
+
+- name: Preflight | Settings
+  ansible.builtin.assert:
+    that:
+      - vpn_panel_enabled_protocols | length > 0
+      - vpn_panel_enabled_protocols | difference(['wg', 'awg', 'vless']) | length == 0
+      - vpn_panel_network_policy_mode in ['off', 'enforce']
+      - vpn_panel_corp_cidrs is sequence and vpn_panel_corp_cidrs is not string
+      - vpn_panel_dns_servers is sequence and vpn_panel_dns_servers is not string
+      - vpn_panel_xray_port | int != vpn_panel_nginx_panel_tls_port | int
+      - vpn_panel_panel_port | int not in [vpn_panel_xray_port | int, vpn_panel_nginx_panel_tls_port | int]
+    fail_msg: >-
+      Invalid settings: vpn_panel_enabled_protocols must list wg, awg and/or vless;
+      vpn_panel_network_policy_mode must be off or enforce; vpn_panel_corp_cidrs and
+      vpn_panel_dns_servers must be lists; the loopback ports of the panel
+      ({{ vpn_panel_panel_port }}), its TLS server ({{ vpn_panel_nginx_panel_tls_port }}) and Xray
+      ({{ vpn_panel_xray_port }}) must differ.
+    quiet: true
+
+- name: Preflight | Address plan
+  ansible.builtin.assert:
+    that: corpvpn_plan_problems | length == 0
+    fail_msg: "{{ corpvpn_plan_problems }}"
+    quiet: true
+  vars:
+    corpvpn_plan_problems: >-
+      {{ {'wg_network': vpn_panel_wg_network, 'awg_network': vpn_panel_awg_network,
+          'awg_enabled': 'awg' in vpn_panel_enabled_protocols, 'wg_server_ip': vpn_panel_wg_server_ip,
+          'corp_cidrs': vpn_panel_corp_cidrs, 'dns_servers': vpn_panel_dns_servers,
+          'split': vpn_panel_split_mode | bool, 'link_network': vpn_panel_site_link_network,
+          'trusted_proxy_cidrs': vpn_panel_trusted_proxy_cidrs,
+          'local_allowed_cidrs': vpn_panel_auth_local_allowed_cidrs | default([]),
+          'forward_deny_cidrs': vpn_panel_forward_deny_cidrs} | corpvpn_plan_errors }}
+  run_once: true
+
+- name: Preflight | REALITY server name is not the panel's name
+  ansible.builtin.assert:
+    that:
+      - vpn_panel_xray_client_reality_server_name | lower != vpn_panel_server_name | lower
+      - vpn_panel_xray_client_reality_server_name | lower != vpn_panel_nginx_server_name | default('') | lower
+    fail_msg: >-
+      The REALITY server name {{ vpn_panel_xray_client_reality_server_name }} must be a third-party
+      site: nginx sends that name to Xray, so it cannot also be the panel's name.
+    quiet: true
+  when: "'vless' in vpn_panel_enabled_protocols"

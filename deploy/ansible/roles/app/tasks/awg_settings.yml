@@ -1,0 +1,60 @@
+---
+# awg.db is the live source of AmneziaWG settings (endpoint, DNS, Jc/S/H...).
+# The rendered JSON seeds an EMPTY store only: once clients hold configs, their
+# obfuscation params must not change because a deploy re-ran. They must, however,
+# always equal the running awg0's (checked below).
+- name: App | AmneziaWG seed settings
+  ansible.builtin.template:
+    src: awg_settings.json.j2
+    dest: "{{ vpn_panel_config_dir }}/awg_settings.json"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: App | Seed awg.db from the rendered settings (first install only)
+  ansible.builtin.command:
+    cmd: "{{ vpn_panel_venv_dir }}/bin/python awg_settings.py --seed-from-json {{ vpn_panel_config_dir }}/awg_settings.json"
+    chdir: "{{ vpn_panel_app_dir }}"
+  environment:
+    AWG_DB_PATH: "{{ vpn_panel_config_dir }}/awg.db"
+  register: app_awg_seed
+  changed_when: app_awg_seed.stdout is search('^seeded')
+
+- name: App | AmneziaWG settings the panel hands to clients
+  ansible.builtin.command:
+    argv:
+      - "{{ vpn_panel_venv_dir }}/bin/python"
+      - -c
+      - "import json, awg_settings; print(json.dumps(awg_settings.load_settings()))"
+    chdir: "{{ vpn_panel_app_dir }}"
+  environment:
+    AWG_DB_PATH: "{{ vpn_panel_config_dir }}/awg.db"
+  register: app_awg_db
+  changed_when: false
+
+# A deploy without awg used to seed awg.db with the WireGuard port and zero
+# obfuscation; configs built from that never reach awg0.
+- name: App | Replace settings seeded while awg was off
+  ansible.builtin.command:
+    cmd: "{{ vpn_panel_venv_dir }}/bin/python awg_settings.py --seed-from-json {{ vpn_panel_config_dir }}/awg_settings.json --force"
+    chdir: "{{ vpn_panel_app_dir }}"
+  environment:
+    AWG_DB_PATH: "{{ vpn_panel_config_dir }}/awg.db"
+  register: app_awg_reseed
+  changed_when: true
+  when: >-
+    (app_awg_db.stdout | from_json).endpoint_port | int == vpn_panel_wg_port | int
+    or app_awg_panel_values | max == 0
+
+- name: App | The panel's AmneziaWG obfuscation matches the running awg0
+  ansible.builtin.assert:
+    that: app_awg_panel_values == app_awg_live_values
+    fail_msg: >-
+      awg.db holds obfuscation {{ dict(app_awg_keys | zip(app_awg_panel_values)) }}, the running
+      {{ vpn_panel_awg_interface }} uses {{ dict(app_awg_keys | zip(app_awg_live_values)) }}: every
+      AmneziaWG config the panel issues would fail. If {{ vpn_panel_awg_interface }} runs the right values,
+      re-seed the panel from them ({{ vpn_panel_venv_dir }}/bin/python awg_settings.py --seed-from-json
+      {{ vpn_panel_config_dir }}/awg_settings.json --force, in {{ vpn_panel_app_dir }} with
+      AWG_DB_PATH={{ vpn_panel_config_dir }}/awg.db) and re-issue the AmneziaWG configs.
+    quiet: true
+  when: app_awg_reseed is skipped

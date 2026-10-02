@@ -1,37 +1,37 @@
-VPN Panel
+CorpVPN
 Copyright (c) 2026 Alexander Gomanov
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+CorpVPN is distributed under the MIT License. Preserve LICENSE and the original
+copyright notice when redistributing this project.
 
-You may use this project for personal, educational, or commercial purposes,
-provided that the original copyright notice and license text are preserved.
+Third-party components are fetched or built separately by the installer; the
+CorpVPN source archive does not bundle their binaries or source trees. Preserve
+their license files and provide corresponding source where their license
+requires it if you redistribute an installed appliance or binary image.
 
--------------------------------------------------------------------------------
-Third-Party Acknowledgements
--------------------------------------------------------------------------------
+AmneziaWG Go implementation
+  Source: https://github.com/amnezia-vpn/amneziawg-go
+  License: MIT (LICENSE in the pinned source tree).
+  Based on WireGuard's Go implementation; keep its copyright notices.
 
-AmneziaWG
-  AmneziaWG is developed by the AmneziaVPN project.
-  Repository: https://github.com/amnezia-vpn/amnezia-client
-  License: Apache License 2.0
+AmneziaWG tools
+  Source: https://github.com/amnezia-vpn/amneziawg-tools
+  License: GNU General Public License version 2 (COPYING in the source tree).
 
-  This project supports the AmneziaWG configuration format and can generate
-  AmneziaWG-compatible peer configuration files. It does not include, modify,
-  or redistribute AmneziaVPN source code.
-
-WireGuard
-  WireGuard® is a registered trademark of Jason A. Donenfeld.
-  Website: https://www.wireguard.com/
-
-  This project can generate WireGuard-compatible configuration files and
-  interact with WireGuard userspace tools. It does not include, modify, or
-  redistribute WireGuard source code.
+WireGuard tools and kernel support
+  Sources: https://git.zx2c4.com/wireguard-tools/ and the Linux kernel.
+  License: GNU General Public License version 2.
+  WireGuard is a trademark of Jason A. Donenfeld.
 
 Xray-core
-  Xray-core is developed by the XTLS project.
-  Repository: https://github.com/XTLS/Xray-core
-  License: Mozilla Public License 2.0
+  Source: https://github.com/XTLS/Xray-core
+  License: Mozilla Public License 2.0 (LICENSE in the pinned source tree).
 
-  This project manages Xray server configuration, generates VLESS client
-  profiles, and may call the Xray binary for validation and reload operations.
-  It does not include, modify, or redistribute Xray-core source code.
+Go
+  Source: https://go.dev/
+  License: BSD-style license; downloaded for building AmneziaWG.
+
+nginx, Python, OpenSSL, SQLite and operating-system packages retain their own
+licenses in the installed distribution. Python package metadata and the release
+SBOM identify runtime dependencies. No external UI fonts or icon libraries are
+bundled. Component versions and source revisions are in deploy/versions.yml.
