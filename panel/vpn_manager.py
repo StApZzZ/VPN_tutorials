@@ -33,6 +33,11 @@ from models import (
     VpnStatus,
 )
 
+try:
+    import fcntl
+except ImportError:  # Windows development only
+    fcntl = None
+
 logger = logging.getLogger(__name__)
 
 # `wg` answers in milliseconds. Peer changes run under the backend lock that every
@@ -824,6 +829,49 @@ def get_client_conf(pubkey: str, protocol: Protocol = Protocol.WG) -> Optional[s
     raise ValueError(f"Unsupported peer config protocol: {protocol.value}")
 
 
+def _awg_interface_live() -> bool:
+    return Path("/sys/class/net", config.AWG_INTERFACE).exists()
+
+
+def _remove_awg_peer(pubkey: str) -> None:
+    """Remove the live and persisted mirror before reporting a revocation.
+
+    The timer holds this same lock from reading wg0 through applying awg0, so
+    an older timer render cannot reintroduce the removed credential afterward.
+    The panel's backend lock is separate; no child tries to reacquire it.
+    """
+    if not config.AWG_SERVER_PUBLIC_KEY:
+        return  # plain-WG alias, no separate AWG interface
+    path = Path(config.AWG_CONFIG_PATH)
+    if not path.parent.exists():
+        if _awg_interface_live():
+            raise RuntimeError("AmneziaWG configuration directory is missing")
+        return
+    fd = os.open(path.parent / ".corpvpn-peer-sync.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if fcntl is not None:
+            deadline = time.monotonic() + COMMAND_TIMEOUT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("AmneziaWG peer mirror lock timed out")
+                    time.sleep(0.05)
+        if path.exists():
+            header, blocks = _split_config(path.read_text(encoding="utf-8"))
+            kept = [block.strip("\n") for block in blocks if not _block_matches_pubkey(block, pubkey)]
+            content = header.rstrip() + "\n"
+            if kept:
+                content += "\n" + "\n\n".join(kept) + "\n"
+            _atomic_write(str(path), content)
+        if _awg_interface_live():
+            _run(["awg", "set", config.AWG_INTERFACE, "peer", pubkey, "remove"])
+    finally:
+        os.close(fd)
+
+
 def deactivate_peer(pubkey: str) -> None:
     _backup()
 
@@ -840,6 +888,7 @@ def deactivate_peer(pubkey: str) -> None:
         else:
             updated_blocks.append(block)
     _write_config_blocks(header, updated_blocks)
+    _remove_awg_peer(pubkey)
 
     clients = _read_table()
     client = _find_client(clients, pubkey)
@@ -898,6 +947,7 @@ def delete_peer(pubkey: str) -> None:
     header, blocks = _read_config_blocks()
     filtered_blocks = [block for block in blocks if not _block_matches_pubkey(block, pubkey)]
     _write_config_blocks(header, filtered_blocks)
+    _remove_awg_peer(pubkey)
 
     clients = [client for client in _read_table() if client.get("clientId") != pubkey]
     _write_table(clients)

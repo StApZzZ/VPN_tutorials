@@ -179,6 +179,7 @@ def network_config_warnings() -> list[str]:
 # back to a plain-WG alias of wg0.
 AWG_SERVER_PUBLIC_KEY = os.getenv("AWG_SERVER_PUBLIC_KEY", "").strip()
 AWG_INTERFACE = os.getenv("AWG_INTERFACE", "awg0")
+AWG_CONFIG_PATH = os.getenv("AWG_CONFIG_PATH", "/etc/amnezia/amneziawg/" + AWG_INTERFACE + ".conf")
 # Protocols this gateway actually serves (the installer's PROTOCOLS). A profile
 # may allow more; employees are only offered the intersection.
 ENABLED_PROTOCOLS = tuple(

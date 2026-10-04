@@ -198,3 +198,31 @@ def test_connector_docker_pairs_use_the_configured_lan_and_default_fallback():
     for lan, expected in [("cvoffice0", "cvoffice0"), ("", "eth0")]:
         result = environment.from_string(expression).render(site_link_iface="wg-site", site_link_lan_iface=lan, ansible_default_ipv4={"interface": "eth0"})
         assert result == str([["wg-site", expected]])
+
+
+def test_peer_mirror_takes_lock_before_reading_source(peer_sync):
+    fcntl = pytest.importorskip("fcntl")
+    script, conf = peer_sync
+    source = script.read_text().replace("fcntl.flock(fd, fcntl.LOCK_EX)",
+        "print('LOCK_WAIT', flush=True); fcntl.flock(fd, fcntl.LOCK_EX)")
+    script.write_text(source)
+    lock = conf.parent / ".corpvpn-peer-sync.lock"
+    with lock.open("w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        child = subprocess.Popen([sys.executable, str(script), "--no-apply"],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            assert child.stdout.readline().strip() == "LOCK_WAIT"
+            assert child.poll() is None
+            wg = script.parent / "wg/wg0.conf"
+            wg.write_text(WG0.replace("PublicKey = AAAA", "PublicKey = REMOVED").replace(
+                "[Peer]\nPublicKey = REMOVED\nPresharedKey = PSK-A\nAllowedIPs = 10.66.0.2/32",
+                "# [Peer]\n# PublicKey = REMOVED\n# PresharedKey = PSK-A\n# AllowedIPs = 10.66.0.2/32"))
+            fcntl.flock(held, fcntl.LOCK_UN)
+            _, error = child.communicate(timeout=10)
+            assert child.returncode == 0, error
+            assert "REMOVED" not in conf.read_text()
+            assert "CCCC" in conf.read_text()
+        finally:
+            if child.poll() is None:
+                child.kill(); child.wait()

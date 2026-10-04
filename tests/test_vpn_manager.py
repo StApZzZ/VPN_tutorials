@@ -267,3 +267,34 @@ def test_get_all_peers_returns_empty_when_wg_config_is_missing(wg_files):
     assert vm.get_all_peers() == []
     stats = vm.get_stats()
     assert (stats.total_peers, stats.total_online, stats.never_connected, stats.inactive) == (0, 0, 0, 0)
+
+
+@pytest.mark.parametrize("action", ["deactivate_peer", "delete_peer"])
+def test_revocation_removes_awg_live_and_persisted_peers_before_return(wg_files, monkeypatch, action):
+    tmp_path, tool = wg_files
+    awg_conf = tmp_path / "awg0.conf"
+    text = SERVER_HEADER + "\n[Peer]\nPublicKey=AAA=\nAllowedIPs=10.66.4.2/32\n" + "\n[Peer]\nPublicKey=BBB=\nAllowedIPs=10.66.4.3/32\n"
+    (tmp_path / "wg0.conf").write_text(text)
+    awg_conf.write_text(text)
+    monkeypatch.setattr(config, "AWG_CONFIG_PATH", str(awg_conf))
+    monkeypatch.setattr(config, "AWG_SERVER_PUBLIC_KEY", "separate-awg-key")
+    monkeypatch.setattr(vm, "_awg_interface_live", lambda: True)
+    getattr(vm, action)("AAA=")
+    assert "AAA=" not in awg_conf.read_text() and "BBB=" in awg_conf.read_text()
+    assert ["awg", "set", config.AWG_INTERFACE, "peer", "AAA=", "remove"] in tool.calls
+    assert awg_conf.stat().st_mode & 0o777 == 0o600
+
+
+def test_failed_awg_removal_is_reported(wg_files, monkeypatch):
+    tmp_path, tool = wg_files
+    monkeypatch.setattr(config, "AWG_CONFIG_PATH", str(tmp_path / "awg0.conf"))
+    monkeypatch.setattr(config, "AWG_SERVER_PUBLIC_KEY", "separate-awg-key")
+    monkeypatch.setattr(vm, "_awg_interface_live", lambda: True)
+    (tmp_path / "wg0.conf").write_text(SERVER_HEADER)
+    def fail(cmd, input_text=None):
+        if cmd[:2] == ["awg", "set"]:
+            raise RuntimeError("AWG removal failed")
+        return tool(cmd, input_text)
+    monkeypatch.setattr(vm, "_run", fail)
+    with pytest.raises(RuntimeError, match="AWG removal failed"):
+        vm.deactivate_peer("AAA=")

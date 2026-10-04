@@ -5,12 +5,13 @@
 A {{ awg_server_wg_iface }} pool address becomes the {{ awg_server_iface }} pool address with the same host
 offset ({{ awg_server_wg_network }} -> {{ awg_server_network }}); other AllowedIPs are copied as
 they are. Peers the panel disabled (commented out in {{ awg_server_wg_iface }}.conf) are left out,
-so a suspended device loses AmneziaWG access on the next run as well. Applies
+the panel removes their live and persisted AWG peers immediately. Applies
 live with `awg syncconf` (no restart); `--no-apply` only writes the file.
 
 `--check-obfuscation FILE` compares the running interface with the obfuscation
 parameters in FILE and exits 3 when they differ (0 when the interface is down).
 """
+import fcntl
 import ipaddress
 import json
 import os
@@ -92,7 +93,7 @@ def live_obfuscation(show_output):
 def check_obfuscation(path):
     with open(path, encoding="utf-8") as handle:
         expected = json.load(handle)
-    shown = subprocess.run(["awg", "show", IFACE], capture_output=True, text=True)
+    shown = subprocess.run(["awg", "show", IFACE], capture_output=True, text=True, timeout=10)
     if shown.returncode != 0:
         print(f"{IFACE} is not running; nothing to compare")
         return 0
@@ -112,7 +113,7 @@ def check_obfuscation(path):
     return 0
 
 
-def main(argv):
+def sync(argv):
     if argv[:1] == ["--check-obfuscation"] and len(argv) == 2:
         return check_obfuscation(argv[1])
     content, count = render()
@@ -125,12 +126,22 @@ def main(argv):
         os.replace(tmp, CONF)
     if "--no-apply" in argv:
         return 0
-    if subprocess.run(["ip", "link", "show", IFACE], capture_output=True).returncode != 0:
+    if subprocess.run(["ip", "link", "show", IFACE], capture_output=True, timeout=10).returncode != 0:
         return 0  # not up yet: awg-quick reads the file when it starts
-    strip = subprocess.run(["awg-quick", "strip", IFACE], capture_output=True, text=True, check=True).stdout
-    subprocess.run(["awg", "syncconf", IFACE, "/dev/stdin"], input=strip, text=True, check=True)
+    strip = subprocess.run(["awg-quick", "strip", IFACE], capture_output=True, text=True, check=True, timeout=10).stdout
+    subprocess.run(["awg", "syncconf", IFACE, "/dev/stdin"], input=strip, text=True, check=True, timeout=10)
     print(f"{IFACE}: {count} peers")
     return 0
+
+
+def main(argv):
+    lock = os.path.join(os.path.dirname(CONF), ".corpvpn-peer-sync.lock")
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return sync(argv)
+    finally:
+        os.close(fd)
 
 
 if __name__ == "__main__":
