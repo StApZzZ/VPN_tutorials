@@ -14,8 +14,8 @@
     that:
       - vpn_panel_tls_mode != 'none' or (vpn_panel_trusted_proxy_cidrs | length > 0 and vpn_panel_public_url.startswith('https://'))
       - vpn_panel_tls_mode in ['letsencrypt', 'selfsigned', 'custom', 'none']
-      - vpn_panel_tls_mode == 'none' or (vpn_panel_ssl_cert_path | trim and vpn_panel_ssl_key_path | trim)
-      - vpn_panel_tls_mode != 'letsencrypt' or (nginx_server_name != '_' and vpn_panel_certbot_email | trim)
+      - vpn_panel_tls_mode == 'none' or (vpn_panel_ssl_cert_path | trim | length > 0 and vpn_panel_ssl_key_path | trim | length > 0)
+      - vpn_panel_tls_mode != 'letsencrypt' or (nginx_server_name != '_' and vpn_panel_certbot_email | trim | length > 0)
       - vpn_panel_nginx_enabled | bool or 'vless' not in vpn_panel_enabled_protocols
     fail_msg: >-
       vpn_panel_tls_mode must be letsencrypt, selfsigned, custom or none; every mode but none needs

@@ -42,6 +42,7 @@ jobs:
       - run: shellcheck -S warning deploy/quickstart.sh deploy/run.sh tests/test_quickstart.sh tools/acceptance/*.sh
       - run: bash tests/test_quickstart.sh < /dev/null
       - run: python -m unittest discover -s tests -p test_source_upgrade.py
+      - run: python -m unittest discover -s tests -p test_nginx_settings.py
       - run: ansible-lint deploy/ansible
       - name: Check all playbooks
         working-directory: deploy/ansible
