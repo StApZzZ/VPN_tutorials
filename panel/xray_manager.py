@@ -286,10 +286,49 @@ def _ensure_block_outbound(base_config: dict, rendered_routing: dict) -> None:
         outbounds.append({"tag": "block", "protocol": "blackhole"})
 
 
+def _sync_direct_final_rules(base_config: dict, rendered_routing: dict) -> None:
+    """Permit profile destinations past Xray's private-IP fallback policy.
+
+    Routing still checks each user's profile before choosing direct. Freedom
+    has no user matcher, so its final allow list is the union of concrete direct
+    IP rules; geoip:private must never become a blanket private-network permit.
+    Rebuild on every apply so removed profile grants disappear as well.
+    """
+    import ipaddress
+    import network_policy
+
+    direct = _find_tagged(base_config.get("outbounds", []), "direct")
+    if direct is None or direct.get("protocol") != "freedom":
+        return
+    final_rules = [{"action": "block", "ip": [
+        *network_policy.xray_guard_rules()[0]["ip"], "::/0"], "blockDelay": "0"}]
+    for rule in rendered_routing.get("rules") or []:
+        if rule.get("outboundTag") != "direct" or not rule.get("ip"):
+            continue
+        cidrs = []
+        for value in rule["ip"]:
+            try:
+                net = ipaddress.ip_network(value, strict=False)
+            except ValueError:
+                continue  # geoip rules are deliberately not final grants
+            if net.version == 4:
+                cidrs.append(str(net))
+        if not cidrs:
+            continue
+        grant = {"action": "allow", "ip": cidrs}
+        for key in ("network", "port"):
+            if key in rule:
+                grant[key] = rule[key]
+        if grant not in final_rules:
+            final_rules.append(grant)
+    direct.setdefault("settings", {})["finalRules"] = final_rules
+
+
 def _build_merged_config_from_rendered(rendered_routing: dict) -> dict:
     base_config = _load_base_config()
     base_config["routing"] = rendered_routing
     _ensure_block_outbound(base_config, rendered_routing)
+    _sync_direct_final_rules(base_config, rendered_routing)
     _sync_observatory(base_config, rendered_routing)
     _inject_stats_into_config(base_config)
     try:

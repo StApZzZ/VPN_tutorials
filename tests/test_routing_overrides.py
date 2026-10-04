@@ -543,7 +543,9 @@ class RoutingOverrideServiceTests(unittest.TestCase):
             # rule with an unknown tag to the default (direct) outbound.
             self.assertEqual(
                 merged["outbounds"],
-                [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
+                [{"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{
+                    "action": "block", "ip": [*network_policy.xray_guard_rules()[0]["ip"], "::/0"],
+                    "blockDelay": "0"}]}}, {"tag": "block", "protocol": "blackhole"}],
             )
             self.assertEqual(merged["routing"]["rules"][0], network_policy.xray_guard_rules()[0])
             self.assertEqual(merged["routing"]["domainStrategy"], "IPIfNonMatch")

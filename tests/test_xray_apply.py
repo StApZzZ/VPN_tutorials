@@ -122,3 +122,28 @@ def test_client_json_carries_the_key_under_both_names(xray_env):
     client = xc.create_client(name="Kate")
     reality = xc.render_outbound_config(client)["streamSettings"]["realitySettings"]
     assert reality["publicKey"] == reality["password"] == PUB
+
+
+def test_final_rules_allow_profile_networks_but_keep_dns_ports_and_hard_denials(xray_env):
+    import network_policy as np
+    routing = {"rules": [
+        *np.xray_guard_rules(),
+        {"user": ["staff@corpvpn"], "ip": ["172.30.0.0/24"], "outboundTag": "direct"},
+        {"user": ["staff@corpvpn"], "ip": ["10.20.0.53/32"], "port": "53",
+         "network": "tcp,udp", "outboundTag": "direct"},
+        {"ip": ["geoip:private"], "outboundTag": "direct"},
+    ]}
+    merged = xm._build_merged_config_from_rendered(routing)
+    final = merged["outbounds"][0]["settings"]["finalRules"]
+    assert final[0]["action"] == "block"
+    assert "169.254.0.0/16" in final[0]["ip"] and "127.0.0.0/8" in final[0]["ip"]
+    assert "::/0" in final[0]["ip"]
+    assert final[1:] == [
+        {"action": "allow", "ip": ["172.30.0.0/24"]},
+        {"action": "allow", "ip": ["10.20.0.53/32"], "network": "tcp,udp", "port": "53"},
+    ]
+    assert merged["routing"] == routing  # per-user authorization remains intact
+    xray_env.write_text(json.dumps(merged))
+    # A revoked grant must not survive the next apply through the live base.
+    after = xm._build_merged_config_from_rendered({"rules": [*np.xray_guard_rules(), routing["rules"][-1]]})
+    assert after["outbounds"][0]["settings"]["finalRules"] == final[:1]
